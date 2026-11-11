@@ -9,6 +9,8 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  id-token: write
+  attestations: write
 concurrency:
   group: crisol-${{ github.ref }}
   cancel-in-progress: true
@@ -45,6 +47,10 @@ jobs:
           } | Set-Content crtoi/package/SHA256SUMS.txt
           Compress-Archive -Path crtoi/package/* -DestinationPath "crtoi/$name" -CompressionLevel Optimal -Force
           "ZIP_NAME=crtoi/$name" | Out-File $env:GITHUB_ENV -Append
+      - name: Sign build provenance for the ZIP
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ env.ZIP_NAME }}
       - name: Upload build output (requires review before release)
         uses: actions/upload-artifact@v4
         with:
