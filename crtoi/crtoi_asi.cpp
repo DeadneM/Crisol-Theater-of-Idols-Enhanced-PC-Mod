@@ -51,7 +51,12 @@ std::atomic_uint g_cheatShopAttempts{0},g_cheatShopSequences{0};
 
 std::atomic_int g_worldFov{90},g_fpsFov{85};
 std::atomic_bool g_worldEnabled{false},g_fpsEnabled{false};
-std::atomic_bool g_captureCamera{false},g_suspendFov{false};
+std::atomic_bool g_captureCamera{false},g_suspendFov{false},g_autoCamera{true};
+std::atomic_uint g_autoCameraCaptures{0},g_autoCameraReleases{0};
+std::atomic_uintptr_t g_autoCandidate{0};
+std::atomic_uint64_t g_autoCandidateSince{0},g_playerLastSeen{0};
+std::atomic_uint g_autoCandidateFrames{0};
+std::atomic<float> g_candidateWorld{0.f},g_candidateFPS{0.f};
 std::atomic_uintptr_t g_playerCamera{0};
 std::atomic<float> g_nativeWorld{0.f},g_nativeFps{0.f};
 std::atomic<float> g_baselineWorld{0.f},g_baselineFps{0.f};
@@ -124,6 +129,7 @@ void SaveSettings(){
     swprintf_s(v,L"%d",g_worldFov.load());WritePrivateProfileStringW(L"Camera",L"WorldFOV",v,g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"WorldFOVEnabled",g_worldEnabled.load()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"FPSFOVEnabled",g_fpsEnabled.load()?L"1":L"0",g_ini.c_str());
+    WritePrivateProfileStringW(L"Camera",L"AutoCaptureGameplay",g_autoCamera.load()?L"1":L"0",g_ini.c_str());
     swprintf_s(v,L"%d",g_fpsFov.load());WritePrivateProfileStringW(L"Camera",L"FPSFOV",v,g_ini.c_str());
 }
 void InitPathAndSettings(){
@@ -144,6 +150,7 @@ void InitPathAndSettings(){
     g_worldFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"WorldFOV",90,g_ini.c_str())),75,130);
     g_worldEnabled=GetPrivateProfileIntW(L"Camera",L"WorldFOVEnabled",0,g_ini.c_str())!=0;
     g_fpsEnabled=GetPrivateProfileIntW(L"Camera",L"FPSFOVEnabled",0,g_ini.c_str())!=0;
+    g_autoCamera=GetPrivateProfileIntW(L"Camera",L"AutoCaptureGameplay",1,g_ini.c_str())!=0;
     g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",85,g_ini.c_str())),60,130);
     Log(L"CRToi V0.7A: F2 freecam + F3 native actor teleport test; FOV camera hook retained.");
 }
@@ -469,6 +476,79 @@ void HandleFlyCamera(void* camera,uint8_t* view,bool aiming){
     ++g_flyFrames;
 }
 
+
+// Automatically discover the first-person player camera after gameplay starts.
+// This is a conservative opt-in-by-default observation, not a static pointer
+// scan. Only the already-verified GetCameraView callback is considered.
+// Cinematics often switch cameras or native FOV, so this never changes those.
+void SetGameplayCamera(void* camera,float world,float fps,bool autoDetected){
+    g_playerCamera=reinterpret_cast<uintptr_t>(camera);
+    g_baselineWorld=world;g_baselineFps=fps;
+    g_nativeWorld=world;g_nativeFps=fps;
+    g_playerLastSeen=GetTickCount64();
+    g_autoCandidate=0;
+    g_autoCandidateFrames=0;
+    if(autoDetected)++g_autoCameraCaptures;
+    StopFly(L"Freecam stopped: gameplay camera acquired or changed.");
+    wchar_t line[240]{};
+    swprintf_s(line,L"Gameplay camera %s: %p, native World=%.2f, FPS=%.2f.",
+        autoDetected?L"AUTO CAPTURED":L"MANUALLY CAPTURED",camera,
+        double(world),double(fps));
+    Log(line);
+}
+bool CameraOwnerLooksLikeGameplay(void* camera,const uint8_t* view){
+    void* owner=nullptr;
+    double root[3]{},location[3]{};
+    std::memcpy(location,view,sizeof(location));
+    if(!Valid3(location) || !GetPlayerRootFromCamera(camera,owner,root))return false;
+    double dx=location[0]-root[0],dy=location[1]-root[1],dz=location[2]-root[2];
+    if(dx*dx+dy*dy>120.0*120.0 || std::abs(dz)>260.0)return false;
+    return true;
+}
+void AutoCaptureCamera(void* camera,uint8_t* view,float world,float fps,bool aiming){
+    if(!g_autoCamera.load()||g_captureCamera.load()||g_flyActive.load()||
+       g_suspendFov.load()||aiming||g_menuOpen.load()||
+       !g_gameHwnd||GetForegroundWindow()!=g_gameHwnd)return;
+    const uint64_t now=GetTickCount64();
+    const uintptr_t ptr=reinterpret_cast<uintptr_t>(camera);
+    const uintptr_t owner=g_playerCamera.load();
+    if(owner==ptr){
+        g_playerLastSeen=now;
+        return;
+    }
+    // On a level load or after a cinematic camera swap, the previously
+    // selected camera can disappear. Recover only when it has not appeared
+    // for >=2.5 seconds and the new candidate is stable.
+    if(owner){
+        const uint64_t seen=g_playerLastSeen.load();
+        if(seen&&now-seen<2500)return;
+    }
+    if(!CameraOwnerLooksLikeGameplay(camera,view)){
+        // A cinematic camera can be a real component, but typically isn't
+        // in the same first-person actor coordinate neighbourhood.
+        if(g_autoCandidate.load()==ptr){
+            g_autoCandidate=0;g_autoCandidateFrames=0;
+        }
+        return;
+    }
+    const uintptr_t prior=g_autoCandidate.load();
+    if(prior!=ptr || std::abs(world-g_candidateWorld.load())>0.25f ||
+       std::abs(fps-g_candidateFPS.load())>0.25f) {
+        g_autoCandidate=ptr;g_autoCandidateSince=now;
+        g_autoCandidateFrames=1;g_candidateWorld=world;g_candidateFPS=fps;
+        return;
+    }
+    ++g_autoCandidateFrames;
+    const uint64_t since=g_autoCandidateSince.load();
+    if(since && now-since>=1500 && g_autoCandidateFrames.load()>=30){
+        if(owner&&owner!=ptr){
+            ++g_autoCameraReleases;
+            StopFly(L"Freecam stopped: new gameplay camera after transition.");
+        }
+        SetGameplayCamera(camera,world,fps,true);
+    }
+}
+
 void __fastcall HookCameraView(void* camera,float delta,void* out) {
     if(!g_originalCameraView)return;
     g_originalCameraView(camera,delta,out);
@@ -492,21 +572,15 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
     ++g_firstPersonCandidates;
     bool aiming=ScopeInputHeld();
     const uintptr_t ptr=reinterpret_cast<uintptr_t>(camera);
-    if(g_captureCamera.load()&&!aiming) {
-        // The player explicitly selects this camera during normal gameplay.
-        g_playerCamera.store(ptr);
-        g_baselineWorld.store(baseWorld);
-        g_baselineFps.store(baseFPS);
-        g_nativeWorld.store(baseWorld);
-        g_nativeFps.store(baseFPS);
+    if(g_captureCamera.load()&&!aiming){
+        // Keep the user-controlled fallback from V0.4A, unchanged in function.
+        SetGameplayCamera(camera,baseWorld,baseFPS,false);
         g_captureCamera=false;
-        StopFly(L"Freecam ended because camera was recaptured.");
-        wchar_t line[240]{};
-        swprintf_s(line,L"Captured player camera %p; native world=%.2f, first-person=%.2f",
-            camera,double(baseWorld),double(baseFPS));
-        Log(line);
+    }else{
+        AutoCaptureCamera(camera,view,baseWorld,baseFPS,aiming);
     }
     if(g_playerCamera.load()!=ptr)return; // camera swap (cinematics) => vanilla
+    g_playerLastSeen=GetTickCount64();
     g_nativeWorld.store(baseWorld);
     g_nativeFps.store(baseFPS);
     if(g_suspendFov.load()){
@@ -652,10 +726,10 @@ void DrawMenu(){
     layout::StyleScope style;
     ImGui::SetNextWindowSize(ImVec2(720,555),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(520,370),ImVec2(1300,1020));
-    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.7A F2 FREECAM F3 TELEPORT TEST",
+    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.8A AUTO FOV + FREECAM TEST",
         &open,ImGuiWindowFlags_NoCollapse)){
         ImGui::TextColored(ImVec4(.52f,.83f,1.f,1.f),"CRISOL ENHANCED PC MOD");
-        ImGui::SameLine();ImGui::TextDisabled("V0.7A | F2 FREECAM + F3 TELEPORT");
+        ImGui::SameLine();ImGui::TextDisabled("V0.8A | AUTO FOV + SKIP INTRO");
         ImGui::Separator();ImGui::Spacing();
         ImGui::SetNextItemOpen(true,ImGuiCond_Once);
         if(layout::Group("Camera / Gameplay ownership")){
@@ -664,15 +738,23 @@ void DrawMenu(){
                     "Camera hook unavailable; this EXE does not match the verified target.");
             }else if(g_playerCamera.load()==0){
                 ImGui::TextColored(ImVec4(1.f,.78f,.40f,1.f),
-                    "No gameplay camera captured. Enter normal gameplay first.");
+                    "Waiting for gameplay camera; automatic detection runs after loading.");
             }else{
                 ImGui::TextColored(ImVec4(.45f,.90f,.69f,1.f),
                     "Camera captured. Scoped edits are restricted to this instance.");
                 ImGui::Text("Original World FOV: %.1f | Original FPS FOV: %.1f",
                     g_baselineWorld.load(),g_baselineFps.load());
             }
-            ImGui::TextWrapped("Capture only during normal gameplay, outside ADS/zoom and cinematics. Other cameras are never changed.");
-            if(ImGui::Button(g_captureCamera.load()?"Waiting for active camera...":"Capture gameplay camera")){
+            bool automatic=g_autoCamera.load();
+            if(ImGui::Checkbox("Auto-detect gameplay camera",&automatic)){
+                g_autoCamera=automatic;SaveSettings();
+                g_autoCandidate=0;g_autoCandidateFrames=0;
+            }
+            ImGui::TextDisabled("Captures a stable, first-person camera after loading; native zoom/cinematics keep priority.");
+            ImGui::Text("Auto captures: %u | transitions: %u",
+                g_autoCameraCaptures.load(),g_autoCameraReleases.load());
+            ImGui::TextWrapped("Manual recapture remains available if the game camera is not recognized.");
+            if(ImGui::Button(g_captureCamera.load()?"Waiting for active camera...":"Recapture gameplay camera (manual)")){
                 StopFly(L"Freecam ended by manual camera recapture.");
                 g_captureCamera=true;
                 g_playerCamera=0;
@@ -800,7 +882,7 @@ void DrawMenu(){
                 g_cameraCalls.load(),g_firstPersonCandidates.load());
             ImGui::Text("World changes: %u | FPS changes: %u | zoom bypass: %u",
                 g_worldApplied.load(),g_fpsApplied.load(),g_scopeBypass.load());
-            ImGui::TextDisabled("Camera must be captured per session or after level reload.");
+            ImGui::TextDisabled("Camera auto-detection is enabled by default (manual fallback retained).");
             ImGui::TextDisabled("Cinema using same player camera needs in-game validation.");
             ImGui::TextDisabled("No global FOV scalar patch; no embedded developer console.");
         }
