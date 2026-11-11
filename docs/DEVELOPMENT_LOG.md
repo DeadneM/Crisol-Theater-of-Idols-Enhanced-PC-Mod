@@ -72,3 +72,20 @@ the achievement list still includes Solari ID 1. This does not establish that
 runtime/UI state is correct, or that the older save was free of this issue.
 Do not rewrite counters based on the screenshot. The map widget / total-source
 requires separate investigation and is outside V0.8B's correction.
+
+### V0.8B delivery verification
+
+- **BUILT:** source `71dafa45352415dd4c06961800cd7f968872bf3d`, successful
+  [Actions run 43100509478](https://github.com/DeadneM/Crisol-Theater-of-Idols-Enhanced-PC-Mod/actions/runs/43100509478).
+- **CONTROLLED:** artifact 13891831223, wrapper SHA-256
+  `0663231d2132a239b0feb34d37b61f0057e96691595e8b3360e564532ee03e26`.
+  Inner install ZIP SHA-256
+  `dbb193456605c822d86f98992f08a707ff8c12a94b89032587b891e02f6e0ae0`.
+  Exactly two root entries; both are x64 PE binaries; suspend label absent.
+- ASI SHA-256 `8b7f7d0548a8ba75d0dc410edc6449c059107a342abbbba154445b85c0eed1af`.
+- DXGI SHA-256 `5a34482505157ebc11bc6f4acd87084a8a4b150e89833029d406e258fad2bd92`.
+- Defender custom scan: no threats detected. Protection settings unchanged.
+- Installed over V0.8A after verified rollback copies. Installed file hashes match
+  the staged build. Existing INI byte-for-byte unchanged. No save write performed.
+- **EXPERIMENTAL:** F1 open/close, native zoom/cinematics/FOV regression and absence
+  of the removed checkbox still need the user's game test. No stable promotion.
