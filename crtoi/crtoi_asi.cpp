@@ -16,6 +16,8 @@
 #include <atomic>
 #include <cmath>
 #include <cwchar>
+#include <cwctype>
+#include <cstdlib>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -35,6 +37,10 @@ std::mutex g_logMutex;
 std::once_flag g_initOnce;
 std::atomic_bool g_menuOpen{false},g_imguiReady{false},g_failed{false};
 std::atomic_int g_captureHotkey{0},g_menuVK{VK_INSERT},g_consoleScan{0x29};
+std::atomic_int g_cheatShopVK{VK_F1},g_smlConsoleVK{0};
+std::atomic_bool g_cheatShopBusy{false};
+std::atomic_uint g_cheatShopAttempts{0},g_cheatShopSequences{0};
+
 std::atomic_int g_worldFov{90},g_fpsFov{85};
 std::atomic_bool g_worldEnabled{false},g_fpsEnabled{false};
 std::atomic_bool g_captureCamera{false},g_suspendFov{false};
@@ -102,6 +108,7 @@ void SaveSettings(){
     if(g_ini.empty())return;
     wchar_t v[30];
     swprintf_s(v,L"%d",g_menuVK.load());WritePrivateProfileStringW(L"Hotkeys",L"MenuVirtualKey",v,g_ini.c_str());
+    swprintf_s(v,L"%d",g_cheatShopVK.load());WritePrivateProfileStringW(L"Hotkeys",L"CheatShopVirtualKey",v,g_ini.c_str());
     swprintf_s(v,L"%d",g_consoleScan.load());WritePrivateProfileStringW(L"Hotkeys",L"DeveloperConsoleScanCode",v,g_ini.c_str());
     swprintf_s(v,L"%d",g_worldFov.load());WritePrivateProfileStringW(L"Camera",L"WorldFOV",v,g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"WorldFOVEnabled",g_worldEnabled.load()?L"1":L"0",g_ini.c_str());
@@ -117,48 +124,116 @@ void InitPathAndSettings(){
     g_ini=dir+L"CRToiEnhanced.ini";
     g_log=dir+L"CRToiEnhanced.log";
     g_menuVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"MenuVirtualKey",VK_INSERT,g_ini.c_str())),8,254);
+    g_cheatShopVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"CheatShopVirtualKey",VK_F1,g_ini.c_str())),8,254);
+    g_smlConsoleVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"SMLConsoleVirtualKey",0,g_ini.c_str())),0,254);
     g_consoleScan=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"DeveloperConsoleScanCode",41,g_ini.c_str())),1,127);
     g_worldFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"WorldFOV",90,g_ini.c_str())),75,130);
     g_worldEnabled=GetPrivateProfileIntW(L"Camera",L"WorldFOVEnabled",0,g_ini.c_str())!=0;
     g_fpsEnabled=GetPrivateProfileIntW(L"Camera",L"FPSFOVEnabled",0,g_ini.c_str())!=0;
     g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",85,g_ini.c_str())),60,130);
-    Log(L"CRToi V0.4A camera-scoped World/FPS FOV initialized. No global scalar patch.");
+    Log(L"CRToi V0.5A: validated V0.4A World/FPS camera hooks retained. F1 CheatShop shortcut enabled.");
 }
-void PressScan(WORD scan){
-    INPUT keys[2]{};
-    keys[0].type=INPUT_KEYBOARD;keys[0].ki.wScan=scan;keys[0].ki.dwFlags=KEYEVENTF_SCANCODE;
-    keys[1]=keys[0];keys[1].ki.dwFlags|=KEYEVENTF_KEYUP;
-    SendInput(2,keys,sizeof(INPUT));
+// SML's cheatshop is an external mod console command. This small, opt-in
+// user-input macro invokes it on one F1 press. It does NOT patch/copy SML.
+// This first test does open the UE console briefly, automatically;
+// a truly console-free native Exec bridge remains separate future work.
+bool SendScanPair(WORD scan){
+    INPUT input[2]{};
+    input[0].type=INPUT_KEYBOARD;
+    input[0].ki.wScan=scan;
+    input[0].ki.dwFlags=KEYEVENTF_SCANCODE;
+    input[1]=input[0];
+    input[1].ki.dwFlags|=KEYEVENTF_KEYUP;
+    return SendInput(2,input,sizeof(INPUT))==2;
 }
-void PressVk(WORD vk){
-    INPUT keys[2]{};
-    keys[0].type=INPUT_KEYBOARD;keys[0].ki.wVk=vk;
-    keys[1]=keys[0];keys[1].ki.dwFlags=KEYEVENTF_KEYUP;
-    SendInput(2,keys,sizeof(INPUT));
+bool SendVkPair(WORD vk){
+    INPUT input[2]{};
+    input[0].type=INPUT_KEYBOARD;
+    input[0].ki.wVk=vk;
+    input[1]=input[0];
+    input[1].ki.dwFlags=KEYEVENTF_KEYUP;
+    return SendInput(2,input,sizeof(INPUT))==2;
 }
-void TypeChar(wchar_t c){
-    INPUT keys[2]{};
-    keys[0].type=INPUT_KEYBOARD;keys[0].ki.wScan=WORD(c);keys[0].ki.dwFlags=KEYEVENTF_UNICODE;
-    keys[1]=keys[0];keys[1].ki.dwFlags=KEYEVENTF_UNICODE|KEYEVENTF_KEYUP;
-    SendInput(2,keys,sizeof(INPUT));
+bool SendUnicodePair(wchar_t c){
+    INPUT input[2]{};
+    input[0].type=INPUT_KEYBOARD;
+    input[0].ki.wScan=WORD(c);
+    input[0].ki.dwFlags=KEYEVENTF_UNICODE;
+    input[1]=input[0];
+    input[1].ki.dwFlags=KEYEVENTF_UNICODE|KEYEVENTF_KEYUP;
+    return SendInput(2,input,sizeof(INPUT))==2;
 }
-DWORD WINAPI SendWorldFov(void* unused){
-    (void)unused;
-    // Opt-in only. This sends to the game's OWN console; no code patch.
-    Sleep(180);
-    if(GetForegroundWindow()!=g_gameHwnd) {
-        Log(L"World FOV command not sent because game is not foreground.");
+// SML can be configured with Steam launch argument -consolekey=F10.
+// Respect F1..F12 without requiring users to duplicate that setting in INI.
+// Explicit SMLConsoleVirtualKey in our INI overrides this detection.
+int SMLLaunchConsoleVK(){
+    std::wstring command(GetCommandLineW());
+    for(wchar_t& c:command)c=static_cast<wchar_t>(towlower(c));
+    const auto pos=command.find(L"-consolekey=");
+    if(pos==std::wstring::npos)return 0;
+    const wchar_t* key=command.c_str()+pos+wcslen(L"-consolekey=");
+    if(*key!=L'f')return 0;
+    wchar_t* end=nullptr;
+    const long number=wcstol(key+1,&end,10);
+    if(end==key+1||number<1||number>12)return 0;
+    if(*end && !iswspace(*end) && *end!=L'"')return 0;
+    return VK_F1+int(number)-1;
+}
+DWORD WINAPI RunCheatShop(void*){
+    // The ImGui menu can trigger this too; let its input interception end.
+    Sleep(170);
+    if(!g_gameHwnd || GetForegroundWindow()!=g_gameHwnd){
+        Log(L"CheatShop: ignored; the game window is not foreground.");
+        g_cheatShopBusy=false;
         return 0;
     }
-    PressScan(WORD(g_consoleScan.load()));
-    Sleep(135);
-    wchar_t line[32]{};
-    swprintf_s(line,L"fov %d",g_worldFov.load());
-    for(const wchar_t* p=line;*p;++p)TypeChar(*p);
-    PressVk(VK_RETURN);
-    Log(L"World FOV console command sent; engine response cannot be confirmed.");
+    const int configured=g_smlConsoleVK.load();
+    const int openVK=configured?configured:SMLLaunchConsoleVK();
+    const bool opened=openVK?SendVkPair(WORD(openVK)):
+         SendScanPair(WORD(g_consoleScan.load()));
+    if(!opened){
+        Log(L"CheatShop: failed to inject console hotkey.");
+        g_cheatShopBusy=false;
+        return 0;
+    }
+    // Delay by a few rendered frames so Slate's console has focus.
+    Sleep(220);
+    if(GetForegroundWindow()!=g_gameHwnd){
+        Log(L"CheatShop: cancelled; game lost focus before typing.");
+        g_cheatShopBusy=false;
+        return 0;
+    }
+    constexpr wchar_t command[]=L"cheatshop";
+    bool sent=true;
+    for(const wchar_t* p=command;*p;++p){
+        if(!SendUnicodePair(*p)){sent=false;break;}
+        Sleep(22);
+    }
+    if(sent){
+        Sleep(80);
+        sent=SendVkPair(VK_RETURN);
+    }
+    if(sent){
+        ++g_cheatShopSequences;
+        Log(L"CheatShop: automatic console sequence sent. SML/shop response not verified.");
+    }else{
+        Log(L"CheatShop: keyboard injection incomplete.");
+    }
+    Sleep(260);
+    g_cheatShopBusy=false;
     return 0;
 }
+void RequestCheatShop(){
+    if(g_cheatShopBusy.exchange(true))return;
+    ++g_cheatShopAttempts;
+    HANDLE h=CreateThread(nullptr,0,&RunCheatShop,nullptr,0,nullptr);
+    if(h)CloseHandle(h);
+    else{
+        Log(L"CheatShop: could not start shortcut dispatcher.");
+        g_cheatShopBusy=false;
+    }
+}
+
 // These native RVAs and struct offsets were verified against the exact game EXE.
 // Camera output: FMinimalViewInfo +0x30 World FOV, +0x34 DesiredFOV,
 // +0x38 FirstPersonFOV, +0x68 first-person flags (bit 0x2).
@@ -283,8 +358,12 @@ LRESULT CALLBACK WindowProc(HWND wnd,UINT msg,WPARAM wp,LPARAM lp){
             const int capture=g_captureHotkey.exchange(0);
             if(capture) {
                 if(wp!=VK_ESCAPE) {
-                    if(capture==1)g_menuVK=int(wp);
-                    if(capture==2)g_consoleScan=int((lp>>16)&0xFF);
+                    if(capture==1){
+                        if(int(wp)!=g_cheatShopVK.load())g_menuVK=int(wp);
+                    }
+                    if(capture==3){
+                        if(int(wp)!=g_menuVK.load())g_cheatShopVK=int(wp);
+                    }
                     SaveSettings();
                     Log(L"Hotkey rebound through native game window.");
                 }
@@ -294,8 +373,12 @@ LRESULT CALLBACK WindowProc(HWND wnd,UINT msg,WPARAM wp,LPARAM lp){
                 g_menuOpen=!g_menuOpen.load();
                 return 0;
             }
-            // Developer-console manipulation is intentionally out of scope
-            // for this menu-only test build.
+            if(int(wp)==g_cheatShopVK.load()){
+                g_menuOpen=false;
+                RequestCheatShop();
+                return 0;
+            }
+            // Developer-console menu remains out of scope.
         }
     }
     if(g_menuOpen.load()&&g_imguiReady.load()){
@@ -319,10 +402,10 @@ void DrawMenu(){
     layout::StyleScope style;
     ImGui::SetNextWindowSize(ImVec2(720,555),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(520,370),ImVec2(1300,1020));
-    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.4A CAMERA-SCOPED TEST",
+    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.5A F1 CHEATSHOP TEST",
         &open,ImGuiWindowFlags_NoCollapse)){
         ImGui::TextColored(ImVec4(.52f,.83f,1.f,1.f),"CRISOL ENHANCED PC MOD");
-        ImGui::SameLine();ImGui::TextDisabled("V0.4A | CAMERA-SCOPED FOV");
+        ImGui::SameLine();ImGui::TextDisabled("V0.5A | F1 CHEATSHOP + FOV");
         ImGui::Separator();ImGui::Spacing();
         ImGui::SetNextItemOpen(true,ImGuiCond_Once);
         if(layout::Group("Camera / Gameplay ownership")){
@@ -384,6 +467,35 @@ void DrawMenu(){
                 g_suspendFov=false;SaveSettings();
             }
         }
+        ImGui::SetNextItemOpen(true,ImGuiCond_Once);
+        if(layout::Group("CheatShop (SML external mod)")){
+            ImGui::TextWrapped("Launch SML's 'cheatshop' command with one key press. Press again to close its shop.");
+            ImGui::TextDisabled("Requires SML and CheatMenu. The game console is automated and may flash briefly.");
+            if(ImGui::Button("Open / close CheatShop")){
+                g_menuOpen=false;
+                open=false;
+                RequestCheatShop();
+            }
+            ImGui::Spacing();
+            const int vk=g_cheatShopVK.load();
+            if(vk>=VK_F1&&vk<=VK_F12)
+                ImGui::Text("CheatShop shortcut: F%d",vk-VK_F1+1);
+            else
+                ImGui::Text("CheatShop shortcut: Virtual key %d",vk);
+            if(ImGui::Button(g_captureHotkey.load()==3?
+                    "Press a key (Esc to cancel)##shop":"Change CheatShop key"))
+                g_captureHotkey=3;
+            ImGui::SameLine();
+            if(ImGui::Button("Reset to F1")){
+                g_cheatShopVK=VK_F1;g_captureHotkey=0;SaveSettings();
+            }
+            ImGui::Spacing();
+            ImGui::TextDisabled("If SML uses a custom console key, set SMLConsoleVirtualKey in INI.");
+            ImGui::Text("Console opening key: %s",g_smlConsoleVK.load()?"INI VK override":
+                SMLLaunchConsoleVK()?"SML launch -consolekey=F-key":"Physical key below Esc");
+            ImGui::Text("Sequences sent: %u / requests: %u",
+                g_cheatShopSequences.load(),g_cheatShopAttempts.load());
+        }
         if(layout::Group("Controls")){
             ImGui::Text("Toggle overlay: virtual key %d",g_menuVK.load());
             if(ImGui::Button(g_captureHotkey.load()==1?
@@ -402,7 +514,7 @@ void DrawMenu(){
                 g_worldApplied.load(),g_fpsApplied.load(),g_scopeBypass.load());
             ImGui::TextDisabled("Camera must be captured per session or after level reload.");
             ImGui::TextDisabled("Cinema using same player camera needs in-game validation.");
-            ImGui::TextDisabled("No developer console; no global scalar patch.");
+            ImGui::TextDisabled("No global FOV scalar patch; no embedded developer console.");
         }
     }
     ImGui::End();
