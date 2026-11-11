@@ -1,7 +1,7 @@
 name: Crisol Windows x64 builds
 on:
   push:
-    branches: [main, "dev/v0.5-cheatshop"]
+    branches: [main, "dev/v0.5-cheatshop", "dev/v0.6-native-cheatshop"]
     paths:
       - "crtoi/**"
       - "src/**"
@@ -33,7 +33,12 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $name = if ($env:GITHUB_REF_NAME -eq "main") { "CRToi_Enhanced_V0.4A_VALIDATED_FOV_x64.zip" } else { "CRToi_Enhanced_V0.5A_CHEATSHOP_TEST_x64.zip" }
+          $name = switch ($env:GITHUB_REF_NAME) {
+            "main" { "CRToi_Enhanced_V0.4A_VALIDATED_FOV_x64.zip" }
+            "dev/v0.5-cheatshop" { "CRToi_Enhanced_V0.5A_CHEATSHOP_TEST_x64.zip" }
+            "dev/v0.6-native-cheatshop" { "CRToi_Enhanced_V0.6A_NATIVE_CHEATSHOP_AUDIT_x64.zip" }
+            default { throw "Unknown branch: $env:GITHUB_REF_NAME" }
+          }
           New-Item -ItemType Directory -Force crtoi/package | Out-Null
           Copy-Item crtoi/build/Release/dxgi.dll crtoi/package/
           Copy-Item crtoi/build/Release/CRToiEnhanced.asi crtoi/package/
@@ -54,7 +59,7 @@ jobs:
       - name: Upload build output (requires review before release)
         uses: actions/upload-artifact@v4
         with:
-          name: Crisol-V0.5A-CheatShop-x64
+          name: Crisol-Native-CheatShop-Audit-x64
           path: ${{ env.ZIP_NAME }}
           retention-days: 90
           if-no-files-found: error
