@@ -1,59 +1,57 @@
-Crisol Enhanced PC Mod V0.7A: FREECAM + TELEPORT TEST (Windows x64)
+CRISOL ENHANCED PC MOD V0.8A  |  AUTOCAPTURE FOV + SKIP INTRO TEST
 
-CONTROLS
-- INSERT: the existing in-game Dear ImGui mod menu
-- F1: experimental SML CheatShop command (requires SML separately)
-- F2: toggle freecam. Move through scenery.
-- F3: teleport the player to the freecam position and restore normal camera.
-- During freecam: WASD / ZQSD move, Space rises, Ctrl descends, Shift accelerates.
-- F2 again cancels flight WITHOUT teleporting. Both F2/F3 can be rebound.
-- Set flight speed in the mod menu or the [Freecam] section in the INI.
+INSTALL (2 FILES ONLY)
+Extract dxgi.dll and CRToiEnhanced.asi beside
+CRToiPrototype-Win64-Shipping.exe in CRToiPrototype/Binaries/Win64/.
+Back up any existing dxgi.dll. Do not add or overwrite CRToiEnhanced.ini.
+The mod uses built-in defaults and writes CRToiEnhanced.ini alongside the
+EXE automatically when a setting is changed from the menu.
 
-VALIDATED FEATURES PRESERVED
-- World FOV 75..130 and independent FPS FOV 60..130.
-- Gameplay camera must first be manually captured in the overlay.
-- Scope/zoom/native FOV changes and camera swaps retain priority.
-- dxgi.dll loader, overlay and F1 CheatShop code unchanged.
+NEW: AUTOMATIC CAMERA CAPTURE
+- After gameplay begins, the ASI observes the native first-person camera.
+- After roughly 1.5 seconds of stable first-person camera data (plus gameplay
+  owner-proximity checks), it captures World/FPS baseline automatically.
+- No need to press Insert or manually click Capture gameplay camera first.
+- When gameplay changes camera for a while, a new stable player camera can
+  be captured automatically after a 2.5-second grace period.
+- The old manual Recapture button remains as fallback if automatic detection
+  is too strict for a particular gameplay state.
+- AutoCaptureGameplay=1 by default; can be toggled from the mod menu.
+- Zoom, scope, native FOV transitions and other cameras remain protected.
+- This is a heuristic detector, not yet tested against every cutscene.
 
-HOW TO TEST
-1. Use a backup save, stand in a SAFE area and capture gameplay camera.
-2. F2 turns on flight. Try WASD, Space and Ctrl.
-3. Fly to an OPEN, unoccupied area (not inside a wall or hazard).
-4. Press F3: if native AActor::TeleportTo accepts destination, it moves the
-   character and disables freecam. If collision rejects destination, nothing
-   should happen to the player's world position.
-5. F2 cancels any flight. Test menu / FOV / sniper / cinemagraphic scenes.
+NEW: SKIP STARTUP VIDEOS
+- SkipIntroVideos=1 by default; can be toggled in Startup / Skip Intro.
+- Only affects Blu(m)house/developer/startup splashes:
+  BlumLogo.mp4, AnimacionLogoNew.mp4, SplashVideo1.mp4.
+- Uses narrow Win32 file-opening hooks (CreateFileW and CreateFile2) to
+  make these reads appear missing. Does NOT touch or rename physical files.
+- Does not target later gameplay story cinematics or saved games.
+- Because the DXGI loader is initialized only once rendering begins, the
+  movie player may have opened a video before the hooks were installed.
+  In that case skip may not work: inspect 'blocked requests' in diagnostics.
+- Toggle Skip Intro then RESTART to apply to startup sequence.
+- This is an experimental implementation, NOT yet validated during startup.
 
-TELEPORT METHOD
-On the verified Crisol EXE, the native UCameraComponent::GetCameraView hook
-locates the component owner, validates the actor/root location, and invokes
-the native collision-tested AActor::TeleportTo vtable slot. The saved EXE is
-not modified. The input callback only QUEUES F3; actor teleport is done in
-the native gameplay camera callback, not the Windows window procedure.
+PRESERVED
+- World FOV 75..130 and independent First-Person/Weapon FOV 60..130.
+- Original FOVs take priority during sniper ADS, zoom, scene transitions.
+- Insert: ImGui menu. F1: experimental CheatShop with external SML.
+- F2: experimental freecam; F3: native-teleport test to camera position.
+  Both features remain unverified in actual gameplay.
+- For freecam the captured camera is now detected automatically, but the
+  F2/F3 mechanism itself is still experimental.
 
-SAFETY LIMITATIONS
-This is an EXPERIMENTAL build: native owner and collision checks have been
-derived from static executable analysis, not yet validated during gameplay.
-The game may use a separate camera actor, in which case flight will safely
-refuse to start. Standard game input while freecam is enabled might still
-move the pawn through raw-input paths; flight auto-cancels if movement is
-detected. Repeated teleports, scripts, cinematics and loading screens remain
-untested. Avoid high drops and obstacles. The native TeleportTo call returns
-false on some obstructed positions; do NOT force teleport with collision
-checks disabled. The V0.4A baseline remains available on main.
+DIAGNOSTICS / ROLLBACK
+Logs: CRToiLoader.log and CRToiEnhanced.log next to the game EXE.
+For issues, try the validated V0.4A artifact in main as baseline.
+This ZIP intentionally ships only dxgi.dll and CRToiEnhanced.asi.
+SHA-256 checksums and build commit are recorded in the GitHub Actions
+run summary, and the ZIP has a GitHub-signed provenance attestation.
 
-GAME BUILD REQUIREMENT
-SHA-256 of analyzed shipping EXE:
+COMPATIBILITY
+Analyzed game EXE SHA256:
 b8422259fde6aaae65f2075c9d26a60abfb1ac4c0f231217d458bfe28418d378
-Other EXEs must fail closed.
-
-INSTALL
-Extract dxgi.dll, CRToiEnhanced.asi and CRToiEnhanced.ini next to:
-CRToiPrototype/Binaries/Win64/CRToiPrototype-Win64-Shipping.exe
-Backup previous dxgi.dll; preserve customized CRToiEnhanced.ini.
-Build output includes BUILD_INFO.txt, SHA256SUMS.txt and licenses.
-
-BUG REPORT
-Send CRToiLoader.log and CRToiEnhanced.log from the same game folder.
-Report whether F2 activated, camera actually moved, and whether F3 restored
-character to freecam destination. Do not disable security software.
+Only the corresponding game build is supported.
+This is an unofficial mod and is not guaranteed safe or malware-free.
+Do not disable antivirus protection to install it.
