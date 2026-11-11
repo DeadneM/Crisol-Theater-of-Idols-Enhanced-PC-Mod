@@ -48,7 +48,7 @@ jobs:
       - name: Upload build output (requires review before release)
         uses: actions/upload-artifact@v4
         with:
-          name: Crisol-${{ github.ref_name }}-x64
+          name: Crisol-V0.5A-CheatShop-x64
           path: ${{ env.ZIP_NAME }}
           retention-days: 90
           if-no-files-found: error
