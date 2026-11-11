@@ -1,0 +1,9 @@
+crtoi/build/
+crtoi/package/
+crtoi/*.zip
+*.log
+*.obj
+*.pdb
+*.dll
+*.asi
+*.exe

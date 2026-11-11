@@ -1,0 +1,54 @@
+name: Crisol Windows x64 builds
+on:
+  push:
+    branches: [main, "dev/v0.5-cheatshop"]
+    paths:
+      - "crtoi/**"
+      - "src/**"
+      - ".github/workflows/windows-build.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: crisol-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S crtoi -B crtoi/build -G "Visual Studio 18 2026" -A x64
+          if ($LASTEXITCODE -ne 0) { throw "Configuration failed" }
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake --build crtoi/build --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+      - name: Package, hash and record provenance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $name = if ($env:GITHUB_REF_NAME -eq "main") { "CRToi_Enhanced_V0.4A_VALIDATED_FOV_x64.zip" } else { "CRToi_Enhanced_V0.5A_CHEATSHOP_TEST_x64.zip" }
+          New-Item -ItemType Directory -Force crtoi/package | Out-Null
+          Copy-Item crtoi/build/Release/dxgi.dll crtoi/package/
+          Copy-Item crtoi/build/Release/CRToiEnhanced.asi crtoi/package/
+          Copy-Item crtoi/CRToiEnhanced.ini crtoi/package/
+          Copy-Item crtoi/README.txt crtoi/package/
+          Copy-Item crtoi/THIRD_PARTY_LICENSES.txt crtoi/package/
+          "Branch: $env:GITHUB_REF_NAME; SHA: $env:GITHUB_SHA; Run: $env:GITHUB_RUN_ID" | Set-Content crtoi/package/BUILD_INFO.txt
+          Get-ChildItem crtoi/package -File | Sort-Object Name | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          } | Set-Content crtoi/package/SHA256SUMS.txt
+          Compress-Archive -Path crtoi/package/* -DestinationPath "crtoi/$name" -CompressionLevel Optimal -Force
+          "ZIP_NAME=crtoi/$name" | Out-File $env:GITHUB_ENV -Append
+      - name: Upload build output (requires review before release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Crisol-${{ github.ref_name }}-x64
+          path: ${{ env.ZIP_NAME }}
+          retention-days: 90
+          if-no-files-found: error
