@@ -7,6 +7,16 @@ Independent x64 ASI mod for **Crisol: Theater of Idols**. Built around an in-gam
 - **`main`: v0.4A, gameplay-validated World FOV + independently adjustable FPS/weapon FOV.** This is the stable baseline. Manual **Capture gameplay camera** is required after loading gameplay.
 - **`dev/v0.5-cheatshop`: experimental F1 `cheatshop` shortcut** for the separately installed SML and CheatMenu mod. This feature has not yet been confirmed in-game.
 
+## Experimental V0.8A: auto camera capture + Skip Intro
+
+- **Auto FOV camera acquisition:** after loading into gameplay, a stable first-person camera is selected automatically when ownership/proximity checks pass. The manual capture button remains a fallback. Existing native zoom, sniper and camera-swap safeguards are preserved. This detector is **not yet gameplay-validated**.
+- **Skip startup splash videos (experimental):** attempts to suppress reads for only `BlumLogo.mp4`, `AnimacionLogoNew.mp4` and `SplashVideo1.mp4`. Physical files are never altered and story cinematics are not targeted. `[Startup] SkipIntroVideos=1` is on by default; switch it off in the in-game menu for subsequent startups. If the game cannot boot, create a text file `CRToiEnhanced.ini` next to the EXE with `[Startup]` on its own line followed by `SkipIntroVideos=0`.
+- **Minimal installation ZIP:** exactly two files at archive root: `dxgi.dll` and `CRToiEnhanced.asi`. The mod's default settings are embedded, and the existing INI stays on your disk. When you change a setting, the mod creates/updates `CRToiEnhanced.ini` automatically.
+- **Build transparency:** SHA-256 hashes appear in the GitHub Actions run summary, and the ZIP receives an attestation.
+- **Gameplay caveat:** the prior V0.7 freecam/teleport experiment and F1 CheatShop are carried over unchanged and are not yet validated in-game.
+
+[Download V0.8A test from GitHub Actions](https://github.com/DeadneM/Crisol-Theater-of-Idols-Enhanced-PC-Mod/actions/runs/43076274091) (Artifacts section). The V0.4A World/FPS FOV release on `main` remains the validated rollback.
+
 ## V0.4A controls
 
 - `Insert`: in-game ImGui menu, rebindable
@@ -23,7 +33,7 @@ Other versions fail closed. Cutscenes that reuse the exact same gameplay camera 
 
 ## Installation
 
-Build with the included GitHub Actions workflow or CMake on Windows x64. Extract `dxgi.dll`, `CRToiEnhanced.asi`, and `CRToiEnhanced.ini` alongside `CRToiPrototype-Win64-Shipping.exe` in `CRToiPrototype/Binaries/Win64`. Back up an existing `dxgi.dll` before replacing it.
+Build with the included GitHub Actions workflow or CMake on Windows x64. For V0.8A and later development builds, extract only `dxgi.dll` and `CRToiEnhanced.asi` alongside `CRToiPrototype-Win64-Shipping.exe` in `CRToiPrototype/Binaries/Win64`. Back up an existing `dxgi.dll` before replacing it.
 
 Avoid overwriting a customized INI when upgrading. Logs are written beside the executable: `CRToiLoader.log` and `CRToiEnhanced.log`.
 
