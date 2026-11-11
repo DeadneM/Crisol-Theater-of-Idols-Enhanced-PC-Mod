@@ -38,6 +38,14 @@ std::once_flag g_initOnce;
 std::atomic_bool g_menuOpen{false},g_imguiReady{false},g_failed{false};
 std::atomic_int g_captureHotkey{0},g_menuVK{VK_INSERT},g_consoleScan{0x29};
 std::atomic_int g_cheatShopVK{VK_F1},g_smlConsoleVK{0};
+std::atomic_int g_flyVK{VK_F2},g_teleportVK{VK_F3},g_flySpeed{600};
+std::atomic_bool g_flyActive{false},g_flyNeedsOrigin{true},g_teleportPending{false};
+std::atomic_uint g_flyFrames{0},g_teleportSuccess{0},g_teleportFailed{0};
+std::atomic_uintptr_t g_flyOwner{0};
+// The following location arrays are used only by the existing camera-hook thread.
+double g_flyPosition[3]{},g_flyCameraOffset[3]{},g_flyStartOwner[3]{};
+ULONGLONG g_flyLastTick=0;
+
 std::atomic_bool g_cheatShopBusy{false};
 std::atomic_uint g_cheatShopAttempts{0},g_cheatShopSequences{0};
 
@@ -109,6 +117,9 @@ void SaveSettings(){
     wchar_t v[30];
     swprintf_s(v,L"%d",g_menuVK.load());WritePrivateProfileStringW(L"Hotkeys",L"MenuVirtualKey",v,g_ini.c_str());
     swprintf_s(v,L"%d",g_cheatShopVK.load());WritePrivateProfileStringW(L"Hotkeys",L"CheatShopVirtualKey",v,g_ini.c_str());
+    swprintf_s(v,L"%d",g_flyVK.load());WritePrivateProfileStringW(L"Hotkeys",L"FreecamVirtualKey",v,g_ini.c_str());
+    swprintf_s(v,L"%d",g_teleportVK.load());WritePrivateProfileStringW(L"Hotkeys",L"TeleportVirtualKey",v,g_ini.c_str());
+    swprintf_s(v,L"%d",g_flySpeed.load());WritePrivateProfileStringW(L"Freecam",L"Speed",v,g_ini.c_str());
     swprintf_s(v,L"%d",g_consoleScan.load());WritePrivateProfileStringW(L"Hotkeys",L"DeveloperConsoleScanCode",v,g_ini.c_str());
     swprintf_s(v,L"%d",g_worldFov.load());WritePrivateProfileStringW(L"Camera",L"WorldFOV",v,g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"WorldFOVEnabled",g_worldEnabled.load()?L"1":L"0",g_ini.c_str());
@@ -125,13 +136,16 @@ void InitPathAndSettings(){
     g_log=dir+L"CRToiEnhanced.log";
     g_menuVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"MenuVirtualKey",VK_INSERT,g_ini.c_str())),8,254);
     g_cheatShopVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"CheatShopVirtualKey",VK_F1,g_ini.c_str())),8,254);
+    g_flyVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"FreecamVirtualKey",VK_F2,g_ini.c_str())),8,254);
+    g_teleportVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"TeleportVirtualKey",VK_F3,g_ini.c_str())),8,254);
+    g_flySpeed=std::clamp(int(GetPrivateProfileIntW(L"Freecam",L"Speed",600,g_ini.c_str())),100,2000);
     g_smlConsoleVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"SMLConsoleVirtualKey",0,g_ini.c_str())),0,254);
     g_consoleScan=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"DeveloperConsoleScanCode",41,g_ini.c_str())),1,127);
     g_worldFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"WorldFOV",90,g_ini.c_str())),75,130);
     g_worldEnabled=GetPrivateProfileIntW(L"Camera",L"WorldFOVEnabled",0,g_ini.c_str())!=0;
     g_fpsEnabled=GetPrivateProfileIntW(L"Camera",L"FPSFOVEnabled",0,g_ini.c_str())!=0;
     g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",85,g_ini.c_str())),60,130);
-    Log(L"CRToi V0.5A: validated V0.4A World/FPS camera hooks retained. F1 CheatShop shortcut enabled.");
+    Log(L"CRToi V0.7A: F2 freecam + F3 native actor teleport test; FOV camera hook retained.");
 }
 // SML's cheatshop is an external mod console command. This small, opt-in
 // user-input macro invokes it on one F1 press. It does NOT patch/copy SML.
@@ -254,6 +268,195 @@ bool ScopeInputHeld() {
     }
     return false;
 }
+// v0.7A: only the game's already-verified UCameraComponent GetCameraView is used.
+// Static analysis on the exact supported EXE verified:
+// UActorComponent::GetOwner: pointer at component+0x90 (execGetOwner RVA 0x3702010).
+// AActor::K2_GetActorLocation: RootComponent at actor+0x1B8 and world
+// FVector3d at root+0x1F0 (execK2_GetActorLocation RVA 0x34C1330).
+// AActor::execK2_TeleportTo RVA 0x34C2810 dispatches through actor's vtable
+// +0x5D8 with (Actor*, FVector3d*, FRotator3d*, false, false).
+// Actor coordinates are changed ONLY by this native collision-tested method,
+// never by writing speculative actor offsets or altering saved game data.
+bool IsReadableRange(const void* ptr,size_t amount){
+    if(!ptr||!amount)return false;
+    MEMORY_BASIC_INFORMATION mbi{};
+    if(VirtualQuery(ptr,&mbi,sizeof(mbi))!=sizeof(mbi)||
+       mbi.State!=MEM_COMMIT || (mbi.Protect&(PAGE_GUARD|PAGE_NOACCESS)))return false;
+    const DWORD p=mbi.Protect&0xff;
+    if(p!=PAGE_READONLY&&p!=PAGE_READWRITE&&p!=PAGE_WRITECOPY&&
+       p!=PAGE_EXECUTE_READ&&p!=PAGE_EXECUTE_READWRITE&&p!=PAGE_EXECUTE_WRITECOPY)
+        return false;
+    const uintptr_t from=reinterpret_cast<uintptr_t>(ptr);
+    const uintptr_t begin=reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+    return from>=begin && from-begin<=mbi.RegionSize &&
+           amount<=mbi.RegionSize-(from-begin);
+}
+bool Valid3(const double* v){
+    for(int i=0;i<3;++i)
+        if(!std::isfinite(v[i])||std::abs(v[i])>1.e8)return false;
+    return true;
+}
+bool GetPlayerRootFromCamera(void* camera,void*& actor,double root[3]){
+    actor=nullptr;
+    auto* comp=static_cast<const uint8_t*>(camera);
+    if(!IsReadableRange(comp,0x98))return false;
+    void* ptr=nullptr;
+    std::memcpy(&ptr,comp+0x90,sizeof(ptr));
+    if(!IsReadableRange(ptr,0x1C0))return false;
+    auto* object=static_cast<const uint8_t*>(ptr);
+    void* rootComponent=nullptr;
+    std::memcpy(&rootComponent,object+0x1B8,sizeof(rootComponent));
+    if(!IsReadableRange(rootComponent,0x208))return false;
+    std::memcpy(root,static_cast<const uint8_t*>(rootComponent)+0x1F0,24);
+    if(!Valid3(root))return false;
+    actor=ptr;
+    return true;
+}
+void StopFly(const wchar_t* why){
+    if(g_flyActive.exchange(false)){
+        g_teleportPending=false;
+        g_flyNeedsOrigin=true;
+        g_flyOwner=0;
+        if(why)Log(why);
+    }
+}
+void ToggleFly(){
+    if(g_flyActive.load()){
+        StopFly(L"F2: freecam OFF, original camera restored.");
+        return;
+    }
+    if(!g_cameraHookReady.load()||!g_playerCamera.load()){
+        Log(L"F2: capture the normal gameplay camera in ImGui before activating freecam.");
+        return;
+    }
+    g_flyNeedsOrigin=true;
+    g_teleportPending=false;
+    g_flyActive=true;
+    Log(L"F2: freecam requested. Player actor will remain in place.");
+}
+void QueueTeleport(){
+    if(!g_flyActive.load())return;
+    if(g_teleportPending.exchange(true))return;
+    Log(L"F3: teleport requested; waiting for the verified gameplay camera callback.");
+}
+bool FlyKey(int vk){return (GetAsyncKeyState(vk)&0x8000)!=0;}
+bool GameplayWindowActive(){
+    return g_gameHwnd&&GetForegroundWindow()==g_gameHwnd&&!g_menuOpen.load();
+}
+void UpdateFlightLocation(const uint8_t* view){
+    const ULONGLONG now=GetTickCount64();
+    if(!GameplayWindowActive()){g_flyLastTick=now;return;}
+    double dt=g_flyLastTick?double(now-g_flyLastTick)/1000.0:0.0;
+    g_flyLastTick=now;
+    if(!(dt>0.0&&dt<1.0))return;
+    dt=std::min(dt,0.05);
+    double rot[3]{};
+    std::memcpy(rot,view+0x18,sizeof(rot));
+    if(!Valid3(rot))return;
+    constexpr double d=0.017453292519943295;
+    const double yaw=rot[1]*d,pitch=rot[0]*d;
+    const double c=std::cos(yaw),q=std::sin(yaw),cp=std::cos(pitch),sp=std::sin(pitch);
+    const int w=int(FlyKey('W')||FlyKey('Z')||FlyKey(VK_UP))-int(FlyKey('S')||FlyKey(VK_DOWN));
+    const int a=int(FlyKey('D')||FlyKey(VK_RIGHT))-int(FlyKey('A')||FlyKey('Q')||FlyKey(VK_LEFT));
+    const int z=int(FlyKey(VK_SPACE))-int(FlyKey(VK_CONTROL));
+    const int squared=w*w+a*a+z*z;
+    if(!squared)return;
+    const double speed=double(g_flySpeed.load())*(FlyKey(VK_SHIFT)?3.0:1.0);
+    const double factor=dt*speed/std::sqrt(double(squared));
+    g_flyPosition[0]+=(w*cp*c-a*q)*factor;
+    g_flyPosition[1]+=(w*cp*q+a*c)*factor;
+    g_flyPosition[2]+=(w*sp+z)*factor;
+}
+bool TeleportPlayerToFlyCamera(void* actor,const uint8_t* view){
+    if(!actor||!IsReadableRange(actor,sizeof(uintptr_t)))return false;
+    double currentRoot[3]{};
+    void* checkActor=nullptr;
+    if(!GetPlayerRootFromCamera(reinterpret_cast<void*>(g_playerCamera.load()),checkActor,currentRoot)||
+       checkActor!=actor)return false;
+    // If the game has moved the player while freecam is on, it may be scripted
+    // gameplay, a cutscene or a reload. Refuse to teleport a different pawn.
+    double drift=0;
+    for(int i=0;i<3;++i){
+        const double diff=currentRoot[i]-g_flyStartOwner[i];
+        drift+=diff*diff;
+    }
+    if(drift>60.0*60.0)return false;
+    double desired[3]{};
+    for(int i=0;i<3;++i)desired[i]=g_flyPosition[i]-g_flyCameraOffset[i];
+    if(!Valid3(desired))return false;
+    double rotation[3]{};
+    std::memcpy(rotation,view+0x18,sizeof(rotation));
+    if(!Valid3(rotation))return false;
+    void* vtable=nullptr;
+    std::memcpy(&vtable,actor,sizeof(vtable));
+    if(!IsReadableRange(vtable,0x5E0))return false;
+    void* function=nullptr;
+    std::memcpy(&function,static_cast<const uint8_t*>(vtable)+0x5D8,sizeof(function));
+    auto* exe=reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
+    const auto fn=reinterpret_cast<uintptr_t>(function);
+    const auto base=reinterpret_cast<uintptr_t>(exe);
+    if(!exe||fn<base+0x1000||fn>=base+0x749e3dc)return false;
+    using TeleportTo=bool(__fastcall*)(void*,const double*,const double*,bool,bool);
+    const bool ok=reinterpret_cast<TeleportTo>(function)(actor,desired,rotation,false,false);
+    if(ok){
+        ++g_teleportSuccess;
+        StopFly(L"F3: native actor TeleportTo returned success; freecam disabled.");
+    }else{
+        ++g_teleportFailed;
+        Log(L"F3: native teleport refused target (collision or gameplay constraint).");
+    }
+    return ok;
+}
+void HandleFlyCamera(void* camera,uint8_t* view,bool aiming){
+    if(!g_flyActive.load())return;
+    if(aiming){
+        StopFly(L"Freecam cancelled during native ADS/scope.");
+        return;
+    }
+    void* actor=nullptr;
+    double root[3]{};
+    double originalView[3]{};
+    std::memcpy(originalView,view,sizeof(originalView));
+    if(!Valid3(originalView)||!GetPlayerRootFromCamera(camera,actor,root)){
+        StopFly(L"Freecam cancelled: owner actor or native camera location invalid.");
+        return;
+    }
+    if(g_flyNeedsOrigin.exchange(false)){
+        // A separate actor-camera would not have the player's view at its
+        // root. Require plausible first-person camera-to-pawn distance.
+        const double dx=originalView[0]-root[0];
+        const double dy=originalView[1]-root[1];
+        const double dz=originalView[2]-root[2];
+        if(dx*dx+dy*dy>120.0*120.0||std::abs(dz)>260.0){
+            StopFly(L"Freecam refused: camera owner is not sufficiently close to pawn root.");
+            return;
+        }
+        for(int i=0;i<3;++i){
+            g_flyPosition[i]=originalView[i];
+            g_flyCameraOffset[i]=originalView[i]-root[i];
+            g_flyStartOwner[i]=root[i];
+        }
+        g_flyOwner=reinterpret_cast<uintptr_t>(actor);
+        g_flyLastTick=GetTickCount64();
+        Log(L"Freecam origin captured and pawn root proximity validated.");
+    }
+    if(g_flyOwner.load()!=reinterpret_cast<uintptr_t>(actor)){
+        StopFly(L"Freecam stopped: different actor or cinematic camera.");
+        return;
+    }
+    if(g_teleportPending.exchange(false)){
+        TeleportPlayerToFlyCamera(actor,view);
+        return;
+    }
+    UpdateFlightLocation(view);
+    if(!Valid3(g_flyPosition)){
+        StopFly(L"Freecam stopped: invalid flight coordinates.");
+        return;
+    }
+    std::memcpy(view,g_flyPosition,sizeof(g_flyPosition));
+    ++g_flyFrames;
+}
+
 void __fastcall HookCameraView(void* camera,float delta,void* out) {
     if(!g_originalCameraView)return;
     g_originalCameraView(camera,delta,out);
@@ -285,6 +488,7 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
         g_nativeWorld.store(baseWorld);
         g_nativeFps.store(baseFPS);
         g_captureCamera=false;
+        StopFly(L"Freecam ended because camera was recaptured.");
         wchar_t line[240]{};
         swprintf_s(line,L"Captured player camera %p; native world=%.2f, first-person=%.2f",
             camera,double(baseWorld),double(baseFPS));
@@ -293,15 +497,20 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
     if(g_playerCamera.load()!=ptr)return; // camera swap (cinematics) => vanilla
     g_nativeWorld.store(baseWorld);
     g_nativeFps.store(baseFPS);
-    if(g_suspendFov.load())return;
+    if(g_suspendFov.load()){
+        StopFly(L"Freecam disabled because game overrides are suspended.");
+        return;
+    }
     // Aiming, scope zoom, camera blends, FOV animation or gameplay cameras
     // outside their captured baseline must remain fully under native control.
     if(aiming ||
        std::abs(baseWorld-g_baselineWorld.load())>1.0f ||
        std::abs(baseFPS-g_baselineFps.load())>1.0f) {
+        if(g_flyActive.load())StopFly(L"Freecam disabled by zoom, ADS or native FOV transition.");
         ++g_scopeBypass;
         return;
     }
+    HandleFlyCamera(camera,view,aiming);
     if(g_worldEnabled.load()){
         const float value=float(std::clamp(g_worldFov.load(),75,130));
         std::memcpy(view+0x30,&value,4);
@@ -359,11 +568,19 @@ LRESULT CALLBACK WindowProc(HWND wnd,UINT msg,WPARAM wp,LPARAM lp){
             if(capture) {
                 if(wp!=VK_ESCAPE) {
                     if(capture==1){
-                        if(int(wp)!=g_cheatShopVK.load())g_menuVK=int(wp);
+                        if(int(wp)!=g_cheatShopVK.load()&&int(wp)!=g_flyVK.load()&&
+                           int(wp)!=g_teleportVK.load())g_menuVK=int(wp);
                     }
                     if(capture==3){
-                        if(int(wp)!=g_menuVK.load())g_cheatShopVK=int(wp);
+                        if(int(wp)!=g_menuVK.load()&&int(wp)!=g_flyVK.load()&&
+                           int(wp)!=g_teleportVK.load())g_cheatShopVK=int(wp);
                     }
+                    if(capture==4&&int(wp)!=g_menuVK.load()&&
+                       int(wp)!=g_cheatShopVK.load()&&int(wp)!=g_teleportVK.load())
+                        g_flyVK=int(wp);
+                    if(capture==5&&int(wp)!=g_menuVK.load()&&
+                       int(wp)!=g_cheatShopVK.load()&&int(wp)!=g_flyVK.load())
+                        g_teleportVK=int(wp);
                     SaveSettings();
                     Log(L"Hotkey rebound through native game window.");
                 }
@@ -374,12 +591,33 @@ LRESULT CALLBACK WindowProc(HWND wnd,UINT msg,WPARAM wp,LPARAM lp){
                 return 0;
             }
             if(int(wp)==g_cheatShopVK.load()){
+                StopFly(L"Freecam stopped before CheatShop.");
                 g_menuOpen=false;
                 RequestCheatShop();
                 return 0;
             }
+            if(int(wp)==g_flyVK.load()){
+                ToggleFly();
+                return 0;
+            }
+            if(int(wp)==g_teleportVK.load()&&g_flyActive.load()){
+                QueueTeleport();
+                return 0;
+            }
             // Developer-console menu remains out of scope.
         }
+    }
+    if(g_flyActive.load()){
+        // Send only the freecam controls to the overlay; do not let ordinary
+        // keyboard movement reach the game's EnhancedInput pipeline.
+        if(msg==WM_KEYDOWN||msg==WM_KEYUP||msg==WM_SYSKEYDOWN||msg==WM_SYSKEYUP){
+            const int key=int(wp);
+            if(key=='W'||key=='A'||key=='S'||key=='D'||key=='Z'||key=='Q'||
+               key==VK_UP||key==VK_DOWN||key==VK_LEFT||key==VK_RIGHT||
+               key==VK_SPACE||key==VK_CONTROL||key==VK_SHIFT)return 0;
+        }
+        if(msg==WM_CHAR&&(wp=='w'||wp=='a'||wp=='s'||wp=='d'||
+            wp=='z'||wp=='q'||wp=='W'||wp=='A'||wp=='S'||wp=='D'))return 0;
     }
     if(g_menuOpen.load()&&g_imguiReady.load()){
         if(msg==WM_INPUT)return DefWindowProcW(wnd,msg,wp,lp);
@@ -402,10 +640,10 @@ void DrawMenu(){
     layout::StyleScope style;
     ImGui::SetNextWindowSize(ImVec2(720,555),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(520,370),ImVec2(1300,1020));
-    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.5A F1 CHEATSHOP TEST",
+    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.7A F2 FREECAM F3 TELEPORT TEST",
         &open,ImGuiWindowFlags_NoCollapse)){
         ImGui::TextColored(ImVec4(.52f,.83f,1.f,1.f),"CRISOL ENHANCED PC MOD");
-        ImGui::SameLine();ImGui::TextDisabled("V0.5A | F1 CHEATSHOP + FOV");
+        ImGui::SameLine();ImGui::TextDisabled("V0.7A | F2 FREECAM + F3 TELEPORT");
         ImGui::Separator();ImGui::Spacing();
         ImGui::SetNextItemOpen(true,ImGuiCond_Once);
         if(layout::Group("Camera / Gameplay ownership")){
@@ -423,12 +661,49 @@ void DrawMenu(){
             }
             ImGui::TextWrapped("Capture only during normal gameplay, outside ADS/zoom and cinematics. Other cameras are never changed.");
             if(ImGui::Button(g_captureCamera.load()?"Waiting for active camera...":"Capture gameplay camera")){
+                StopFly(L"Freecam ended by manual camera recapture.");
                 g_captureCamera=true;
                 g_playerCamera=0;
             }
             ImGui::SameLine();
-            if(ImGui::Button("Release")){g_playerCamera=0;g_captureCamera=false;}
+            if(ImGui::Button("Release")){
+                StopFly(L"Freecam ended by camera Release.");
+                g_playerCamera=0;g_captureCamera=false;
+            }
             ImGui::Spacing();
+        }
+        ImGui::SetNextItemOpen(true,ImGuiCond_Once);
+        if(layout::Group("Freecam / Teleport to camera")){
+            ImGui::TextWrapped("F2: detach the view. Fly to a clear location, then F3: teleport the player there and restore normal camera.");
+            ImGui::TextDisabled("WASD / ZQSD, Space up, Ctrl down, Shift fast. Choose an empty landing area.");
+            ImGui::TextDisabled("Teleportation uses the game's collision-tested AActor::TeleportTo method.");
+            if(!g_playerCamera.load()){
+                ImGui::TextColored(ImVec4(1.f,.78f,.45f,1.f),
+                    "Capture gameplay camera first, outside cutscenes and zoom.");
+            }
+            if(ImGui::Button(g_flyActive.load()?"F2: Exit freecam":"F2: Enable freecam"))
+                ToggleFly();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!g_flyActive.load());
+            if(ImGui::Button("F3: Teleport and return")){
+                g_menuOpen=false;open=false;QueueTeleport();
+            }
+            ImGui::EndDisabled();
+            ImGui::Text("State: %s",g_flyActive.load()?"FREECAM":"normal gameplay");
+            int speed=g_flySpeed.load();
+            if(ImGui::SliderInt("Fly speed",&speed,100,2000)){
+                g_flySpeed=speed;SaveSettings();
+            }
+            ImGui::Text("Freecam key: VK %d | Teleport key: VK %d",
+                g_flyVK.load(),g_teleportVK.load());
+            if(ImGui::Button(g_captureHotkey.load()==4?
+                "Press freecam key...":"Rebind F2 / Freecam"))g_captureHotkey=4;
+            ImGui::SameLine();
+            if(ImGui::Button(g_captureHotkey.load()==5?
+                "Press teleport key...":"Rebind F3 / Teleport"))g_captureHotkey=5;
+            ImGui::TextDisabled("If the game moves the player or zooms, freecam/teleport is safely cancelled.");
+            ImGui::Text("Flight frames: %u | teleports: %u succeeded, %u refused",
+                g_flyFrames.load(),g_teleportSuccess.load(),g_teleportFailed.load());
         }
         if(layout::Group("Camera / Field of View")){
             bool world=g_worldEnabled.load();
@@ -460,6 +735,7 @@ void DrawMenu(){
             bool suspended=g_suspendFov.load();
             if(ImGui::Checkbox("Suspend ALL overrides (vanilla)",&suspended)){
                 g_suspendFov=suspended;
+                if(suspended)StopFly(L"Freecam cancelled by suspend overrides.");
             }
             if(ImGui::Button("Restore vanilla settings")){
                 g_worldEnabled=false;g_fpsEnabled=false;
