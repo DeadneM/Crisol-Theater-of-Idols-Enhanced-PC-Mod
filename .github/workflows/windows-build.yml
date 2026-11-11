@@ -1,7 +1,7 @@
 name: Crisol Windows x64 builds
 on:
   push:
-    branches: [main, "dev/v0.5-cheatshop", "dev/v0.6-native-cheatshop"]
+    branches: [main, "dev/v0.5-cheatshop", "dev/v0.6-native-cheatshop", "dev/v0.7-freecam-teleport"]
     paths:
       - "crtoi/**"
       - "src/**"
@@ -37,6 +37,7 @@ jobs:
             "main" { "CRToi_Enhanced_V0.4A_VALIDATED_FOV_x64.zip" }
             "dev/v0.5-cheatshop" { "CRToi_Enhanced_V0.5A_CHEATSHOP_TEST_x64.zip" }
             "dev/v0.6-native-cheatshop" { "CRToi_Enhanced_V0.6A_NATIVE_CHEATSHOP_AUDIT_x64.zip" }
+            "dev/v0.7-freecam-teleport" { "CRToi_Enhanced_V0.7A_FREECAM_TELEPORT_TEST_x64.zip" }
             default { throw "Unknown branch: $env:GITHUB_REF_NAME" }
           }
           New-Item -ItemType Directory -Force crtoi/package | Out-Null
@@ -59,7 +60,7 @@ jobs:
       - name: Upload build output (requires review before release)
         uses: actions/upload-artifact@v4
         with:
-          name: Crisol-Native-CheatShop-Audit-x64
+          name: Crisol-V0.7A-Freecam-Teleport-TEST-x64
           path: ${{ env.ZIP_NAME }}
           retention-days: 90
           if-no-files-found: error
