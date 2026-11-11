@@ -1,7 +1,7 @@
 name: Crisol Windows x64 builds
 on:
   push:
-    branches: [main, "dev/v0.5-cheatshop", "dev/v0.6-native-cheatshop", "dev/v0.7-freecam-teleport", "dev/v0.8-autocamera-skip-intro"]
+    branches: [main, "dev/v0.5-cheatshop", "dev/v0.6-native-cheatshop", "dev/v0.7-freecam-teleport", "dev/v0.8-autocamera-skip-intro", "dev/v0.8b-cheatshop-input"]
     paths:
       - "crtoi/**"
       - "src/**"
@@ -39,6 +39,7 @@ jobs:
             "dev/v0.6-native-cheatshop" { "CRToi_Enhanced_V0.6A_NATIVE_CHEATSHOP_AUDIT_x64.zip" }
             "dev/v0.7-freecam-teleport" { "CRToi_Enhanced_V0.7A_FREECAM_TELEPORT_TEST_x64.zip" }
             "dev/v0.8-autocamera-skip-intro" { "CRToi_Enhanced_V0.8A_AUTOFOV_SKIP_INTRO_TEST_x64.zip" }
+            "dev/v0.8b-cheatshop-input" { "CRToi_Enhanced_V0.8B_CHEATSHOP_INPUT_TEST_x64.zip" }
             default { throw "Unknown branch: $env:GITHUB_REF_NAME" }
           }
           if (Test-Path crtoi/package) { Remove-Item crtoi/package -Recurse -Force }
@@ -67,7 +68,7 @@ jobs:
       - name: Upload build output (requires review before release)
         uses: actions/upload-artifact@v4
         with:
-          name: Crisol-V0.8A-AutoFOV-SkipIntro-TEST-x64
+          name: Crisol-${{ github.ref_name == 'dev/v0.8b-cheatshop-input' && 'V0.8B-CheatShop-Input' || 'V0.8A-AutoFOV-SkipIntro' }}-TEST-x64
           path: ${{ env.ZIP_NAME }}
           retention-days: 90
           if-no-files-found: error

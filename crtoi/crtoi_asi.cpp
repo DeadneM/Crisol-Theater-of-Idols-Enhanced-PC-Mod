@@ -54,7 +54,7 @@ std::atomic_uint g_cheatShopAttempts{0},g_cheatShopSequences{0};
 
 std::atomic_int g_worldFov{90},g_fpsFov{85};
 std::atomic_bool g_worldEnabled{false},g_fpsEnabled{false};
-std::atomic_bool g_captureCamera{false},g_suspendFov{false},g_autoCamera{true};
+std::atomic_bool g_captureCamera{false},g_autoCamera{true};
 std::atomic_uint g_autoCameraCaptures{0},g_autoCameraReleases{0};
 std::atomic_uintptr_t g_autoCandidate{0};
 std::atomic_uint64_t g_autoCandidateSince{0},g_playerLastSeen{0};
@@ -157,7 +157,7 @@ void InitPathAndSettings(){
     g_autoCamera=GetPrivateProfileIntW(L"Camera",L"AutoCaptureGameplay",1,g_ini.c_str())!=0;
     g_skipStartupVideos=GetPrivateProfileIntW(L"Startup",L"SkipIntroVideos",1,g_ini.c_str())!=0;
     g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",85,g_ini.c_str())),60,130);
-    Log(L"CRToi V0.8A: auto-capture gameplay camera and targeted skip-intro enabled; scoped FOV hooks retained.");
+    Log(L"CRToi V0.8B: game-window CheatShop input; redundant suspend control removed; scoped FOV hooks retained.");
 }
 // Suppress ONLY the three documented startup MP4 files in Crisol's
 // Content/Movies directory while the game is initializing. This avoids
@@ -244,31 +244,17 @@ void InstallIntroVideoHooks(){
 // user-input macro invokes it on one F1 press. It does NOT patch/copy SML.
 // This first test does open the UE console briefly, automatically;
 // a truly console-free native Exec bridge remains separate future work.
-bool SendScanPair(WORD scan){
-    INPUT input[2]{};
-    input[0].type=INPUT_KEYBOARD;
-    input[0].ki.wScan=scan;
-    input[0].ki.dwFlags=KEYEVENTF_SCANCODE;
-    input[1]=input[0];
-    input[1].ki.dwFlags|=KEYEVENTF_KEYUP;
-    return SendInput(2,input,sizeof(INPUT))==2;
-}
-bool SendVkPair(WORD vk){
-    INPUT input[2]{};
-    input[0].type=INPUT_KEYBOARD;
-    input[0].ki.wVk=vk;
-    input[1]=input[0];
-    input[1].ki.dwFlags=KEYEVENTF_KEYUP;
-    return SendInput(2,input,sizeof(INPUT))==2;
-}
-bool SendUnicodePair(wchar_t c){
-    INPUT input[2]{};
-    input[0].type=INPUT_KEYBOARD;
-    input[0].ki.wScan=WORD(c);
-    input[0].ki.dwFlags=KEYEVENTF_UNICODE;
-    input[1]=input[0];
-    input[1].ki.dwFlags=KEYEVENTF_UNICODE|KEYEVENTF_KEYUP;
-    return SendInput(2,input,sizeof(INPUT))==2;
+// Queue input to the game's own window. V0.8A's global SendInput sequence
+// reported successful injection even when Unreal did not accept the command.
+// WM_CHAR supplies actual text instead of synthetic VK_PACKET input.
+bool PostShopKey(WORD vk){
+    if(!g_gameHwnd||GetForegroundWindow()!=g_gameHwnd)return false;
+    const UINT scan=MapVirtualKeyW(vk,MAPVK_VK_TO_VSC);
+    const LPARAM down=1|(LPARAM(scan)<<16);
+    const bool pressed=PostMessageW(g_gameHwnd,WM_KEYDOWN,vk,down)!=FALSE;
+    const bool released=PostMessageW(g_gameHwnd,WM_KEYUP,vk,
+        down|(LPARAM(1)<<30)|(LPARAM(1)<<31))!=FALSE;
+    return pressed&&released;
 }
 // SML can be configured with Steam launch argument -consolekey=F10.
 // Respect F1..F12 without requiring users to duplicate that setting in INI.
@@ -295,16 +281,16 @@ DWORD WINAPI RunCheatShop(void*){
         return 0;
     }
     const int configured=g_smlConsoleVK.load();
-    const int openVK=configured?configured:SMLLaunchConsoleVK();
-    const bool opened=openVK?SendVkPair(WORD(openVK)):
-         SendScanPair(WORD(g_consoleScan.load()));
+    const int launchVK=SMLLaunchConsoleVK();
+    const int openVK=configured?configured:(launchVK?launchVK:VK_OEM_3);
+    const bool opened=PostShopKey(WORD(openVK));
     if(!opened){
         Log(L"CheatShop: failed to inject console hotkey.");
         g_cheatShopBusy=false;
         return 0;
     }
     // Delay by a few rendered frames so Slate's console has focus.
-    Sleep(220);
+    Sleep(350);
     if(GetForegroundWindow()!=g_gameHwnd){
         Log(L"CheatShop: cancelled; game lost focus before typing.");
         g_cheatShopBusy=false;
@@ -313,16 +299,17 @@ DWORD WINAPI RunCheatShop(void*){
     constexpr wchar_t command[]=L"cheatshop";
     bool sent=true;
     for(const wchar_t* p=command;*p;++p){
-        if(!SendUnicodePair(*p)){sent=false;break;}
-        Sleep(22);
+        if(GetForegroundWindow()!=g_gameHwnd||
+           !PostMessageW(g_gameHwnd,WM_CHAR,WPARAM(*p),1)){sent=false;break;}
+        Sleep(35);
     }
     if(sent){
         Sleep(80);
-        sent=SendVkPair(VK_RETURN);
+        sent=PostShopKey(VK_RETURN);
     }
     if(sent){
         ++g_cheatShopSequences;
-        Log(L"CheatShop: automatic console sequence sent. SML/shop response not verified.");
+        Log(L"CheatShop: command queued to game window (WM_CHAR). SML response still requires gameplay validation.");
     }else{
         Log(L"CheatShop: keyboard injection incomplete.");
     }
@@ -593,7 +580,7 @@ bool CameraOwnerLooksLikeGameplay(void* camera,const uint8_t* view){
 }
 void AutoCaptureCamera(void* camera,uint8_t* view,float world,float fps,bool aiming){
     if(!g_autoCamera.load()||g_captureCamera.load()||g_flyActive.load()||
-       g_suspendFov.load()||aiming||g_menuOpen.load()||
+       aiming||g_menuOpen.load()||
        !g_gameHwnd||GetForegroundWindow()!=g_gameHwnd)return;
     const uint64_t now=GetTickCount64();
     const uintptr_t ptr=reinterpret_cast<uintptr_t>(camera);
@@ -669,10 +656,6 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
     g_playerLastSeen=GetTickCount64();
     g_nativeWorld.store(baseWorld);
     g_nativeFps.store(baseFPS);
-    if(g_suspendFov.load()){
-        StopFly(L"Freecam disabled because game overrides are suspended.");
-        return;
-    }
     // Aiming, scope zoom, camera blends, FOV animation or gameplay cameras
     // outside their captured baseline must remain fully under native control.
     if(aiming ||
@@ -812,10 +795,10 @@ void DrawMenu(){
     layout::StyleScope style;
     ImGui::SetNextWindowSize(ImVec2(720,555),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(520,370),ImVec2(1300,1020));
-    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.8A AUTO FOV + FREECAM TEST",
+    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.8B CHEATSHOP INPUT TEST",
         &open,ImGuiWindowFlags_NoCollapse)){
         ImGui::TextColored(ImVec4(.52f,.83f,1.f,1.f),"CRISOL ENHANCED PC MOD");
-        ImGui::SameLine();ImGui::TextDisabled("V0.8A | AUTO FOV + SKIP INTRO");
+        ImGui::SameLine();ImGui::TextDisabled("V0.8B | AUTO FOV + SKIP INTRO");
         ImGui::Separator();ImGui::Spacing();
         ImGui::SetNextItemOpen(true,ImGuiCond_Once);
         if(layout::Group("Camera / Gameplay ownership")){
@@ -912,21 +895,16 @@ void DrawMenu(){
                 }
             }
             ImGui::Spacing();
-            bool suspended=g_suspendFov.load();
-            if(ImGui::Checkbox("Suspend ALL overrides (vanilla)",&suspended)){
-                g_suspendFov=suspended;
-                if(suspended)StopFly(L"Freecam cancelled by suspend overrides.");
-            }
             if(ImGui::Button("Restore vanilla settings")){
                 g_worldEnabled=false;g_fpsEnabled=false;
                 g_worldFov=90;g_fpsFov=85;
-                g_suspendFov=false;SaveSettings();
+                SaveSettings();
             }
         }
         ImGui::SetNextItemOpen(true,ImGuiCond_Once);
         if(layout::Group("CheatShop (SML external mod)")){
             ImGui::TextWrapped("Launch SML's 'cheatshop' command with one key press. Press again to close its shop.");
-            ImGui::TextDisabled("Requires SML and CheatMenu. The game console is automated and may flash briefly.");
+            ImGui::TextDisabled("Requires SML. Start with its console closed; the console may flash briefly.");
             if(ImGui::Button("Open / close CheatShop")){
                 g_menuOpen=false;
                 open=false;
@@ -948,7 +926,7 @@ void DrawMenu(){
             ImGui::Spacing();
             ImGui::TextDisabled("If SML uses a custom console key, set SMLConsoleVirtualKey in INI.");
             ImGui::Text("Console opening key: %s",g_smlConsoleVK.load()?"INI VK override":
-                SMLLaunchConsoleVK()?"SML launch -consolekey=F-key":"Physical key below Esc");
+                SMLLaunchConsoleVK()?"SML launch -consolekey=F-key":"` / ~ (Tilde)");
             ImGui::Text("Sequences sent: %u / requests: %u",
                 g_cheatShopSequences.load(),g_cheatShopAttempts.load());
         }

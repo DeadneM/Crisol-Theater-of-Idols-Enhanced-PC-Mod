@@ -9,6 +9,21 @@ Independent x64 ASI mod for **Crisol: Theater of Idols**. Built around an in-gam
 
 ## Experimental V0.8A: auto camera capture + Skip Intro
 
+### V0.8B input correction (experimental)
+
+Based on the V0.8A gameplay code. The user reports that its other features appear
+to work, while the F1 CheatShop macro fails. Manual `cheatshop` works via ` / ~.
+V0.8B queues console-key and text messages to the game window instead of global
+synthetic Unicode input. Default console key is now Tilde; an existing INI VK
+override or F-key launch argument still takes precedence. Start with the console
+closed. This correction needs a gameplay test; queuing text is not proof SML acted.
+The redundant "Suspend ALL overrides" control was removed at the user's request.
+Individual FOV toggles and Restore vanilla settings remain available.
+
+FOV values, zoom/cinematic guards, auto capture, freecam/teleport, skip intro and
+existing INI values are retained. Install ZIP still contains exactly the two
+binaries. No progression, map-count or Solari repair is included.
+
 - **Auto FOV camera acquisition:** after loading into gameplay, a stable first-person camera is selected automatically when ownership/proximity checks pass. The manual capture button remains a fallback. Existing native zoom, sniper and camera-swap safeguards are preserved. This detector is **not yet gameplay-validated**.
 - **Skip startup splash videos (experimental):** attempts to suppress reads for only `BlumLogo.mp4`, `AnimacionLogoNew.mp4` and `SplashVideo1.mp4`. Physical files are never altered and story cinematics are not targeted. `[Startup] SkipIntroVideos=1` is on by default; switch it off in the in-game menu for subsequent startups. If the game cannot boot, create a text file `CRToiEnhanced.ini` next to the EXE with `[Startup]` on its own line followed by `SkipIntroVideos=0`.
 - **Minimal installation ZIP:** exactly two files at archive root: `dxgi.dll` and `CRToiEnhanced.asi`. The mod's default settings are embedded, and the existing INI stays on your disk. When you change a setting, the mod creates/updates `CRToiEnhanced.ini` automatically.
