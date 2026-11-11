@@ -89,3 +89,21 @@ requires separate investigation and is outside V0.8B's correction.
   the staged build. Existing INI byte-for-byte unchanged. No save write performed.
 - **EXPERIMENTAL:** F1 open/close, native zoom/cinematics/FOV regression and absence
   of the removed checkbox still need the user's game test. No stable promotion.
+
+## V0.9B hub reentry TEST
+
+Base: `6a7445d` V0.8B delivery checkpoint. V0.8A camera/startup features were
+reported working; V0.8B's CheatShop correction remains experimental.
+Branch: `dev/v0.9b-hub-reentry-test`; stable main is not changed.
+
+Objective: revisit completed chapters without resetting progression. Success:
+actual entry and return, retained boss/puzzle/items, and FOV/zoom/cinematics intact.
+
+Implemented a separate, opt-in, full-hash-gated script hook for IsCorrectDoor and
+SetLockState. It uses verified reflection to restrict changes to five existing
+routes in the Fair and completed chapters 1/2; future access is refused, chapter 3
+is native. Added 29 boundary cases and CI packaging for this branch. Full static
+evidence, native ABI and gameplay checks are in `HUB_REENTRY_NATIVE_AUDIT.md`.
+No game containers or save files are patched; native transitions keep their normal
+autosave behavior. Runtime results remain unvalidated. The map display bug remains
+separate; the user agrees this may be a display issue after returning to the hub.

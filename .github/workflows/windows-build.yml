@@ -1,7 +1,7 @@
 name: Crisol Windows x64 builds
 on:
   push:
-    branches: [main, "dev/v0.5-cheatshop", "dev/v0.6-native-cheatshop", "dev/v0.7-freecam-teleport", "dev/v0.8-autocamera-skip-intro", "dev/v0.8b-cheatshop-input"]
+    branches: [main, "dev/v0.5-cheatshop", "dev/v0.6-native-cheatshop", "dev/v0.7-freecam-teleport", "dev/v0.8-autocamera-skip-intro", "dev/v0.8b-cheatshop-input", "dev/v0.9b-hub-reentry-test"]
     paths:
       - "crtoi/**"
       - "src/**"
@@ -29,6 +29,11 @@ jobs:
         run: |
           cmake --build crtoi/build --config Release --parallel
           if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+      - name: Check completed-chapter access boundaries
+        shell: pwsh
+        run: |
+          ctest --test-dir crtoi/build -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "Hub access policy checks failed" }
       - name: Package, hash and record provenance
         shell: pwsh
         run: |
@@ -40,6 +45,7 @@ jobs:
             "dev/v0.7-freecam-teleport" { "CRToi_Enhanced_V0.7A_FREECAM_TELEPORT_TEST_x64.zip" }
             "dev/v0.8-autocamera-skip-intro" { "CRToi_Enhanced_V0.8A_AUTOFOV_SKIP_INTRO_TEST_x64.zip" }
             "dev/v0.8b-cheatshop-input" { "CRToi_Enhanced_V0.8B_CHEATSHOP_INPUT_TEST_x64.zip" }
+            "dev/v0.9b-hub-reentry-test" { "CRToi_Enhanced_V0.9B_HUB_REENTRY_TEST_x64.zip" }
             default { throw "Unknown branch: $env:GITHUB_REF_NAME" }
           }
           if (Test-Path crtoi/package) { Remove-Item crtoi/package -Recurse -Force }
@@ -68,7 +74,7 @@ jobs:
       - name: Upload build output (requires review before release)
         uses: actions/upload-artifact@v4
         with:
-          name: Crisol-${{ github.ref_name == 'dev/v0.8b-cheatshop-input' && 'V0.8B-CheatShop-Input' || 'V0.8A-AutoFOV-SkipIntro' }}-TEST-x64
+          name: Crisol-${{ github.ref_name == 'dev/v0.9b-hub-reentry-test' && 'V0.9B-Hub-Reentry' || github.ref_name == 'dev/v0.8b-cheatshop-input' && 'V0.8B-CheatShop-Input' || 'V0.8A-AutoFOV-SkipIntro' }}-TEST-x64
           path: ${{ env.ZIP_NAME }}
           retention-days: 90
           if-no-files-found: error

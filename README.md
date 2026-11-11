@@ -4,6 +4,13 @@ Independent x64 ASI mod for **Crisol: Theater of Idols**. Built around an in-gam
 
 ## Versions
 
+- **`dev/v0.9b-hub-reentry-test`: V0.9B experimental completed-chapter reentry.**
+  Enable **Allow revisiting completed chapters** in the menu, then reload the Fair
+  save. Completed chapter 1/2 entrances and their existing returns are targeted;
+  chapter 3 retains native access. No progression-reset or Solari repair is included.
+  Full EXE hash and reflection checks fail closed. First test one round trip before
+  another chapter. See [native audit and test plan](docs/HUB_REENTRY_NATIVE_AUDIT.md).
+
 - **`main`: v0.4A, gameplay-validated World FOV + independently adjustable FPS/weapon FOV.** This is the stable baseline. Manual **Capture gameplay camera** is required after loading gameplay.
 - **`dev/v0.5-cheatshop`: experimental F1 `cheatshop` shortcut** for the separately installed SML and CheatMenu mod. This feature has not yet been confirmed in-game.
 
