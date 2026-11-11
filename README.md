@@ -10,6 +10,8 @@ Independent x64 ASI mod for **Crisol: Theater of Idols**. Built around an in-gam
   chapter 3 retains native access. No progression-reset or Solari repair is included.
   Full EXE hash and reflection checks fail closed. First test one round trip before
   another chapter. See [native audit and test plan](docs/HUB_REENTRY_NATIVE_AUDIT.md).
+  [V0.9B test build / artifact](https://github.com/DeadneM/Crisol-Theater-of-Idols-Enhanced-PC-Mod/actions/runs/43105954754/artifacts/13893458616)
+  is constructed and package-checked; gameplay validation remains pending.
 
 - **`main`: v0.4A, gameplay-validated World FOV + independently adjustable FPS/weapon FOV.** This is the stable baseline. Manual **Capture gameplay camera** is required after loading gameplay.
 - **`dev/v0.5-cheatshop`: experimental F1 `cheatshop` shortcut** for the separately installed SML and CheatMenu mod. This feature has not yet been confirmed in-game.

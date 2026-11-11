@@ -107,3 +107,24 @@ evidence, native ABI and gameplay checks are in `HUB_REENTRY_NATIVE_AUDIT.md`.
 No game containers or save files are patched; native transitions keep their normal
 autosave behavior. Runtime results remain unvalidated. The map display bug remains
 separate; the user agrees this may be a display issue after returning to the hub.
+
+### V0.9B build / installation checkpoint
+
+- **BUILT:** `f6d97b90859881a765b59a78e77a3f895b3b798e`,
+  [run 43105954754](https://github.com/DeadneM/Crisol-Theater-of-Idols-Enhanced-PC-Mod/actions/runs/43105954754), success.
+- **CONTROLLED:** 29 C++ route-policy cases passed in CTest; 6 read-only save-tool
+  tests passed locally. No compile warnings were found in the retrieved job log.
+- Artifact 13893458616; wrapper SHA-256
+  `b376bb6149cd3b4678516425abc8719117c9f6c07996abd605d78217fa92a45c`.
+- Install ZIP SHA-256 `b9170b50205340c8595a76f71d8c62df5c6a86e82a0af05170c0d5e319e37fab`.
+  Exactly `dxgi.dll` + `CRToiEnhanced.asi` at root. x64 PE headers, expected exports
+  and BCrypt import checked. Defender scan: no threats detected.
+- ASI SHA-256 `44f2a9d8bb6811b72c72f8f2c85854b3acf3c78108ff8560537e41d4f270793f`.
+- DXGI SHA-256 `52e2f60668fdd6f193b5960530e41d5f25a91382b3fa7ab8104840dbcb24d0cc`.
+- Installed over V0.8B after verified DLL/ASI/INI and whole SaveGames copies.
+  Installed hashes match the build; INI remains byte-identical (120/105 FOV,
+  menu VK 36). All eight source save files still match the immediate backup.
+- New option remains OFF by default. **EXPERIMENTAL, NOT USER-VALIDATED**:
+  enable it, reload the Fair save, test chapter 1 and return before chapter 2.
+  Hook readiness/counters and actual progression retention need game verification.
+  No stable promotion or map-count/Solari repair is claimed.
