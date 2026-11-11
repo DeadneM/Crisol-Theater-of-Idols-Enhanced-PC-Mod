@@ -444,8 +444,20 @@ void HandleFlyCamera(void* camera,uint8_t* view,bool aiming){
         StopFly(L"Freecam stopped: different actor or cinematic camera.");
         return;
     }
+    double drift=0.0;
+    for(int i=0;i<3;++i){
+        const double d=root[i]-g_flyStartOwner[i];
+        drift+=d*d;
+    }
+    if(drift>60.0*60.0){
+        StopFly(L"Freecam stopped: native player actor moved while freecam was active.");
+        return;
+    }
     if(g_teleportPending.exchange(false)){
-        TeleportPlayerToFlyCamera(actor,view);
+        if(!TeleportPlayerToFlyCamera(actor,view)){
+            ++g_teleportFailed;
+            Log(L"F3: teleport rejected by owner validation, native position or actor method.");
+        }
         return;
     }
     UpdateFlightLocation(view);
