@@ -36,6 +36,9 @@ std::wstring g_ini,g_log;
 std::mutex g_logMutex;
 std::once_flag g_initOnce;
 std::atomic_bool g_menuOpen{false},g_imguiReady{false},g_failed{false};
+std::atomic_bool g_skipStartupVideos{true};
+std::atomic_uint g_introVideoOpensSuppressed{0};
+std::atomic_bool g_introHookWReady{false},g_introHook2Ready{false};
 std::atomic_int g_captureHotkey{0},g_menuVK{VK_INSERT},g_consoleScan{0x29};
 std::atomic_int g_cheatShopVK{VK_F1},g_smlConsoleVK{0};
 std::atomic_int g_flyVK{VK_F2},g_teleportVK{VK_F3},g_flySpeed{600};
@@ -130,6 +133,7 @@ void SaveSettings(){
     WritePrivateProfileStringW(L"Camera",L"WorldFOVEnabled",g_worldEnabled.load()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"FPSFOVEnabled",g_fpsEnabled.load()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"AutoCaptureGameplay",g_autoCamera.load()?L"1":L"0",g_ini.c_str());
+    WritePrivateProfileStringW(L"Startup",L"SkipIntroVideos",g_skipStartupVideos.load()?L"1":L"0",g_ini.c_str());
     swprintf_s(v,L"%d",g_fpsFov.load());WritePrivateProfileStringW(L"Camera",L"FPSFOV",v,g_ini.c_str());
 }
 void InitPathAndSettings(){
@@ -151,9 +155,91 @@ void InitPathAndSettings(){
     g_worldEnabled=GetPrivateProfileIntW(L"Camera",L"WorldFOVEnabled",0,g_ini.c_str())!=0;
     g_fpsEnabled=GetPrivateProfileIntW(L"Camera",L"FPSFOVEnabled",0,g_ini.c_str())!=0;
     g_autoCamera=GetPrivateProfileIntW(L"Camera",L"AutoCaptureGameplay",1,g_ini.c_str())!=0;
+    g_skipStartupVideos=GetPrivateProfileIntW(L"Startup",L"SkipIntroVideos",1,g_ini.c_str())!=0;
     g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",85,g_ini.c_str())),60,130);
-    Log(L"CRToi V0.7A: F2 freecam + F3 native actor teleport test; FOV camera hook retained.");
+    Log(L"CRToi V0.8A: auto-capture gameplay camera and targeted skip-intro enabled; scoped FOV hooks retained.");
 }
+// Suppress ONLY the three documented startup MP4 files in Crisol's
+// Content/Movies directory while the game is initializing. This avoids
+// replacing/renaming game files, packing third-party assets or affecting
+// story/cutscene videos. Other file I/O is always delegated unmodified.
+// The boot-time movie pipeline may have already opened a movie before DXGI
+// initialization: in that case this feature will not skip it (fail-open).
+using CreateFileWFn=HANDLE(WINAPI*)(LPCWSTR,DWORD,DWORD,LPSECURITY_ATTRIBUTES,
+                                    DWORD,DWORD,HANDLE);
+using CreateFile2Fn=HANDLE(WINAPI*)(LPCWSTR,DWORD,DWORD,DWORD,
+                                    LPCREATEFILE2_EXTENDED_PARAMETERS);
+CreateFileWFn g_realCreateFileW=nullptr;
+CreateFile2Fn g_realCreateFile2=nullptr;
+bool TargetStartupMP4(LPCWSTR filename){
+    if(!filename||!g_skipStartupVideos.load())return false;
+    const size_t n=wcslen(filename);
+    if(n<12 || n>32768)return false;
+    const wchar_t* name=filename;
+    for(const wchar_t* p=filename;*p;++p)
+        if(*p==L'\\'||*p==L'/')name=p+1;
+    if(_wcsicmp(name,L"BlumLogo.mp4")!=0 &&
+       _wcsicmp(name,L"AnimacionLogoNew.mp4")!=0 &&
+       _wcsicmp(name,L"SplashVideo1.mp4")!=0)return false;
+    std::wstring location(filename,name);
+    for(wchar_t& c:location) {
+        if(c==L'\\')c=L'/';
+        else c=static_cast<wchar_t>(towlower(c));
+    }
+    return location.ends_with(L"/content/movies/") ||
+           location.ends_with(L"/movies/") ||
+           location.empty(); // allow relative single-file opening
+}
+bool ShouldHideIntro(LPCWSTR filename,DWORD access,DWORD disposition){
+    return TargetStartupMP4(filename) && disposition==OPEN_EXISTING &&
+           ((access&(GENERIC_READ|FILE_READ_DATA|FILE_EXECUTE))!=0 || access==0);
+}
+HANDLE WINAPI HookCreateFileW(LPCWSTR file,DWORD access,DWORD share,
+    LPSECURITY_ATTRIBUTES security,DWORD create,DWORD flags,HANDLE templateFile){
+    if(ShouldHideIntro(file,access,create)){
+        ++g_introVideoOpensSuppressed;
+        SetLastError(ERROR_FILE_NOT_FOUND);
+        return INVALID_HANDLE_VALUE;
+    }
+    return g_realCreateFileW?
+        g_realCreateFileW(file,access,share,security,create,flags,templateFile):
+        INVALID_HANDLE_VALUE;
+}
+HANDLE WINAPI HookCreateFile2(LPCWSTR file,DWORD access,DWORD share,DWORD create,
+                              LPCREATEFILE2_EXTENDED_PARAMETERS params){
+    if(ShouldHideIntro(file,access,create)){
+        ++g_introVideoOpensSuppressed;
+        SetLastError(ERROR_FILE_NOT_FOUND);
+        return INVALID_HANDLE_VALUE;
+    }
+    return g_realCreateFile2?g_realCreateFile2(file,access,share,create,params):
+        INVALID_HANDLE_VALUE;
+}
+void InstallIntroVideoHooks(){
+    if(!g_skipStartupVideos.load())return;
+    HMODULE kernel=GetModuleHandleW(L"kernelbase.dll");
+    if(!kernel)kernel=GetModuleHandleW(L"kernel32.dll");
+    if(!kernel){Log(L"Skip Intro: Win32 file API not loaded; fail-open.");return;}
+    FARPROC createW=GetProcAddress(kernel,"CreateFileW");
+    if(createW&&MH_CreateHook(reinterpret_cast<void*>(createW),
+       reinterpret_cast<void*>(&HookCreateFileW),
+       reinterpret_cast<void**>(&g_realCreateFileW))==MH_OK&&
+       MH_EnableHook(reinterpret_cast<void*>(createW))==MH_OK){
+        g_introHookWReady=true;
+    }
+    FARPROC create2=GetProcAddress(kernel,"CreateFile2");
+    if(create2&&MH_CreateHook(reinterpret_cast<void*>(create2),
+       reinterpret_cast<void*>(&HookCreateFile2),
+       reinterpret_cast<void**>(&g_realCreateFile2))==MH_OK&&
+       MH_EnableHook(reinterpret_cast<void*>(create2))==MH_OK){
+        g_introHook2Ready=true;
+    }
+    wchar_t info[160]{};
+    swprintf_s(info,L"Skip Intro: CreateFileW hook=%d, CreateFile2 hook=%d. Filters three startup MP4 only.",
+       int(g_introHookWReady.load()),int(g_introHook2Ready.load()));
+    Log(info);
+}
+
 // SML's cheatshop is an external mod console command. This small, opt-in
 // user-input macro invokes it on one F1 press. It does NOT patch/copy SML.
 // This first test does open the UE console briefly, automatically;
@@ -866,6 +952,22 @@ void DrawMenu(){
             ImGui::Text("Sequences sent: %u / requests: %u",
                 g_cheatShopSequences.load(),g_cheatShopAttempts.load());
         }
+        ImGui::SetNextItemOpen(true,ImGuiCond_Once);
+        if(layout::Group("Startup / Skip Intro")){
+            bool skip=g_skipStartupVideos.load();
+            if(ImGui::Checkbox("Skip startup logo videos",&skip)){
+                g_skipStartupVideos=skip;SaveSettings();
+            }
+            ImGui::TextDisabled("Targets BlumLogo, AnimacionLogoNew and SplashVideo1 MP4 only.");
+            ImGui::TextDisabled("No files renamed, replaced or removed; story cinematics remain untouched.");
+            ImGui::Text("File hooks: CreateFileW %s / CreateFile2 %s",
+                g_introHookWReady.load()?"ready":"unavailable",
+                g_introHook2Ready.load()?"ready":"unavailable");
+            ImGui::Text("Startup movie open requests blocked: %u",
+                g_introVideoOpensSuppressed.load());
+            ImGui::TextDisabled("Toggle is saved; restart the game to test startup skipping.");
+            ImGui::TextDisabled("If blocked = 0, the game's startup movie loading bypassed our hooks.");
+        }
         if(layout::Group("Controls")){
             ImGui::Text("Toggle overlay: virtual key %d",g_menuVK.load());
             if(ImGui::Button(g_captureHotkey.load()==1?
@@ -1146,6 +1248,7 @@ extern "C" __declspec(dllexport) void WINAPI CRToi_Initialize() {
         if(status!=MH_OK&&status!=MH_ERROR_ALREADY_INITIALIZED){
             g_failed=true;Log(L"MinHook initialization failed.");
         } else {
+            InstallIntroVideoHooks();
             InstallCameraHook();
         }
     });
