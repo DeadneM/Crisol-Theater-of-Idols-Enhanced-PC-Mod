@@ -54,4 +54,17 @@ This project does not distribute game binaries or files from SML and CheatMenu. 
 
 ## Development references
 
+### V0.9 local investigation, 2026-11-11
+
+The supported game executable was verified locally. The actual hub teleport Blueprint
+checks chapter-completion state in `IsCorrectDoor`; changing gate collision alone
+would not address this permission. No reentry patch has been built or installed.
+The inspected local achievement save already records Solari ID `1`; the user confirms
+that chest is open. No collectible or reward has been granted or rewritten.
+See [cumulative investigation](docs/HubReentrySolariResearch.md) and
+[technical history / next steps](docs/DEVELOPMENT_LOG.md).
+
+`tools/inspect_crisol_records.py` adds read-only candidate actor records and
+achievement-list decoding. Its reports are private player data and must stay local.
+
 The dark ImGui UI layout was adapted from [Darksiders Genesis Enhanced PC Mod](https://github.com/DeadneM/Darksiders-Genesis-Enhanced-PC-Mod); the Crisol project has its **own repository and build pipeline**. See [project notes](crtoi/README.txt).

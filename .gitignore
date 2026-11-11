@@ -7,3 +7,6 @@ crtoi/*.zip
 *.dll
 *.asi
 *.exe
+__pycache__/
+*.pyc
+*.sav

@@ -81,3 +81,80 @@ and schema.
 
 Validated independent World/FPS FOV baseline: `main` V0.4A.
 More recent experimental features remain isolated on development branches.
+
+## Local evidence collected 2026-11-11
+
+Status: **CONTROLLED read-only evidence; no new gameplay BUILD; no user VALIDATION
+of reentry.** The executable SHA-256 matches the supported
+`b8422259fde6aaae65f2075c9d26a60abfb1ac4c0f231217d458bfe28418d378`.
+The installed mod's last startup log identifies V0.7A, not V0.8A.
+The existing INI, shortcut and binaries were preserved.
+
+The full SaveGames directory and installed mod/INI/logs were copied locally before
+analysis. Every copied save's SHA-256 matched its source. No save, proprietary asset,
+or private report is included in the repository.
+
+### Confirmed chapter-permission logic
+
+The local, unencrypted IoStore directory index was completely consumed and checked
+against its declared length. Only seven targeted packages were extracted (about
+16 MB, with cached outputs), including the hub and `CR_Teleport_BP`.
+Container files were opened read-only; the 15 GB UCAS was not downloaded or copied.
+
+`CR_Teleport_BP` contains `Locked`, `ChapterNum`, `MapToLoad`, `DoorIsOpen`,
+`IsCorrectDoor`, `SetLockState`, `GetMapSoftObject`, and native transitions.
+The complete serialized script of `IsCorrectDoor` was decoded (426 disk bytes,
+286 VM-memory bytes). Its property accesses and integer comparisons establish:
+
+```text
+if GameInstance.EndChapter2:
+    Out = (ChapterNum == 3)
+else if GameInstance.EndChapter1:
+    Out = (ChapterNum == 2)
+else:
+    Out = (ChapterNum == 1)
+```
+
+This is concrete evidence for a progression-based permission, not proof that
+overriding it alone safely restores travel. `SetLockState`, map selection,
+transition side effects and chapter-to-hub returns still require inspection.
+Do not clear `EndChapter1` / `EndChapter2`: these are progression state.
+Do not globally bypass every teleport interaction.
+
+The inspected hub save contains three `CR_Teleport_BP` actor records with
+33-byte payloads. Their byte meanings have NOT been mapped to Blueprint fields.
+
+### Solari #1: persisted evidence, no justified repair
+
+The user explicitly confirms the corresponding chest is **already open**.
+The local `AchievementData.sav` has `ach_all_solari` entries
+`5, 2, 3, 4, 6, 1, 7, 8, 9, 10, 11`: ID `1` is present.
+`ach_all_bloodechoes` also includes `SecretAdmIrerI` and `SecretAdmIrerII`.
+The local `CR_AcolyteBrooch_BP0` package names `SecretAdmIrerI`;
+`CR_AcolyteBrooch_BP1` names `WithoutRemorse`. Internal BP numbering is therefore
+not a safe substitute for player-facing numbering.
+
+These are persisted local records, not verification of the inventory UI, current
+Steam achievement state, or every counter. A missing item after use may be distinct
+from missing collection credit. No duplicate key, reward or achievement is granted.
+
+### Repeatable read-only inspection
+
+```powershell
+python tools/inspect_crisol_records.py "C:\backup\CRGame01.sav"
+python tools/inspect_crisol_records.py "C:\backup\CRGame01.sav" --compare "C:\backup\AutoSave.sav"
+python tools/inspect_crisol_records.py "C:\backup\AchievementData.sav"
+python -m unittest discover -s tools -p "test_inspect_crisol_records.py"
+```
+
+Actual local checks: 19 targeted records in CRGame01 (3 teleports, 15 chests,
+1 absorbable corpse); all 19 calculated record ends land at the following valid
+class FString. Corpse and nearest chest positions differ by 5.58 game units.
+The achievement reader supports both UTF-8 and UTF-16 strings and retains its
+uninterpreted trailer. Six safety tests pass, including every truncation of
+the sample records and achievement maps. None of these checks is an in-game test.
+
+Format references used for read-only resource analysis:
+[CUE4Parse IoStore](https://github.com/FabianFG/CUE4Parse/blob/master/CUE4Parse/UE4/IO/Objects/FIoStoreTocResource.cs),
+[Zen export entries](https://github.com/FabianFG/CUE4Parse/blob/master/CUE4Parse/UE4/IO/Objects/FExportMapEntry.cs),
+[Kismet tokens](https://github.com/FabianFG/CUE4Parse/blob/master/CUE4Parse/UE4/Kismet/EExprToken.cs).
