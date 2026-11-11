@@ -1,62 +1,59 @@
-CRToi Enhanced V0.5A - F1 CHEATSHOP SHORTCUT TEST (Windows x64)
+Crisol Enhanced PC Mod V0.7A: FREECAM + TELEPORT TEST (Windows x64)
 
-VALIDATED BASE: V0.4A World and independent FPS FOV
-- World FOV: 75..130, FPS/Weapon FOV: 60..130.
-- Both remain independently adjustable.
-- Manual "Capture gameplay camera" remains REQUIRED. Not modified.
-- Keep original camera protection against zoom, sniper scope and swaps.
-- No old global engine constant patch. No developer console menu.
+CONTROLS
+- INSERT: the existing in-game Dear ImGui mod menu
+- F1: experimental SML CheatShop command (requires SML separately)
+- F2: toggle freecam. Move through scenery.
+- F3: teleport the player to the freecam position and restore normal camera.
+- During freecam: WASD / ZQSD move, Space rises, Ctrl descends, Shift accelerates.
+- F2 again cancels flight WITHOUT teleporting. Both F2/F3 can be rebound.
+- Set flight speed in the mod menu or the [Freecam] section in the INI.
 
-NEW FEATURE
-- Press F1 in normal gameplay to issue the external SML mod's
-  "cheatshop" console command automatically.
-- Press F1 again to toggle that same shop off if supported by SML.
-- Configurable CheatShop shortcut in ImGui > CheatShop (SML external mod).
-- "Open / close CheatShop" button in that section.
-- Debounced one action per keypress (no repeat if F1 is held).
-- No changes or redistribution of SML and CheatMenu.
+VALIDATED FEATURES PRESERVED
+- World FOV 75..130 and independent FPS FOV 60..130.
+- Gameplay camera must first be manually captured in the overlay.
+- Scope/zoom/native FOV changes and camera swaps retain priority.
+- dxgi.dll loader, overlay and F1 CheatShop code unchanged.
 
-EXTERNAL REQUIREMENT
-- The "SML and CheatMenu" mod (Nexusmods /crisoltheaterofidols/mods/1)
-  must be installed independently and working.
-- This is a keyboard macro: the game console opens briefly automatically,
-  "cheatshop" is typed, then Enter executes it. It avoids manual console
-  interaction, but does NOT yet provide a truly invisible native Exec bridge.
-- The console may flash briefly. The ASI cannot verify SML's execution.
-- Default console opening key = physical key beneath Escape (scan 41).
-- If SML uses Steam launch option "-consolekey=F10" (F1..F12),
-  this shortcut autodetects that option.
-- Otherwise, configure SMLConsoleVirtualKey in CRToiEnhanced.ini:
-  e.g. F10 = 121, F5 = 116. Set 0 for autodetection/physical default.
-- These settings are independent of CheatShopVirtualKey, which defaults
-  to F1 (112).
+HOW TO TEST
+1. Use a backup save, stand in a SAFE area and capture gameplay camera.
+2. F2 turns on flight. Try WASD, Space and Ctrl.
+3. Fly to an OPEN, unoccupied area (not inside a wall or hazard).
+4. Press F3: if native AActor::TeleportTo accepts destination, it moves the
+   character and disables freecam. If collision rejects destination, nothing
+   should happen to the player's world position.
+5. F2 cancels any flight. Test menu / FOV / sniper / cinemagraphic scenes.
+
+TELEPORT METHOD
+On the verified Crisol EXE, the native UCameraComponent::GetCameraView hook
+locates the component owner, validates the actor/root location, and invokes
+the native collision-tested AActor::TeleportTo vtable slot. The saved EXE is
+not modified. The input callback only QUEUES F3; actor teleport is done in
+the native gameplay camera callback, not the Windows window procedure.
+
+SAFETY LIMITATIONS
+This is an EXPERIMENTAL build: native owner and collision checks have been
+derived from static executable analysis, not yet validated during gameplay.
+The game may use a separate camera actor, in which case flight will safely
+refuse to start. Standard game input while freecam is enabled might still
+move the pawn through raw-input paths; flight auto-cancels if movement is
+detected. Repeated teleports, scripts, cinematics and loading screens remain
+untested. Avoid high drops and obstacles. The native TeleportTo call returns
+false on some obstructed positions; do NOT force teleport with collision
+checks disabled. The V0.4A baseline remains available on main.
+
+GAME BUILD REQUIREMENT
+SHA-256 of analyzed shipping EXE:
+b8422259fde6aaae65f2075c9d26a60abfb1ac4c0f231217d458bfe28418d378
+Other EXEs must fail closed.
 
 INSTALL
-Extract dxgi.dll + CRToiEnhanced.asi + associated files directly into
-CRToiPrototype/Binaries/Win64 beside CRToiPrototype-Win64-Shipping.exe.
-Back up any existing DXGI proxy DLL.
+Extract dxgi.dll, CRToiEnhanced.asi and CRToiEnhanced.ini next to:
+CRToiPrototype/Binaries/Win64/CRToiPrototype-Win64-Shipping.exe
+Backup previous dxgi.dll; preserve customized CRToiEnhanced.ini.
+Build output includes BUILD_INFO.txt, SHA256SUMS.txt and licenses.
 
-IMPORTANT UPGRADE NOTE
-Keep your current CRToiEnhanced.ini if you have personalized FOV values.
-V0.5A reads the new CheatShop key with F1 as the built-in default,
-even if the entry does not exist in your old INI.
-
-TEST
-1. Launch Crisol with SML and CheatMenu installed; confirm manual
-   console command "cheatshop" works once before testing automation.
-2. Load gameplay, with your V0.4A camera capture already performed.
-3. Press F1. Expect automatic console-command sequence and shop toggle.
-4. Press F1 again to close the shop (SML toggles cheatshop).
-5. Check both FOVs were preserved and scoped zoom/cinematics remain native.
-6. Rebind F1 from ImGui; ensure new key functions.
-7. Check CRToiEnhanced.log: "sequence sent" only confirms the
-   keyboard sequence, NOT that the shop actually opened.
-
-IF THE SHOP DOES NOT OPEN
-- If the console does not open, check -consolekey Steam option and
-  SMLConsoleVirtualKey (e.g. 121 for F10).
-- If the console opens but text doesn't type, send both logs.
-- Never assume the other mod is installed just because the shortcut exists.
-
-EXE build identity from user's analyzed file:
-b8422259fde6aaae65f2075c9d26a60abfb1ac4c0f231217d458bfe28418d378
+BUG REPORT
+Send CRToiLoader.log and CRToiEnhanced.log from the same game folder.
+Report whether F2 activated, camera actually moved, and whether F3 restored
+character to freecam destination. Do not disable security software.
