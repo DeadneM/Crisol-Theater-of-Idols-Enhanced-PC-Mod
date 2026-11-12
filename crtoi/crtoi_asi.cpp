@@ -42,7 +42,7 @@ std::atomic_bool g_menuOpen{false},g_imguiReady{false},g_failed{false};
 std::atomic_bool g_skipStartupVideos{true};
 std::atomic_uint g_introVideoOpensSuppressed{0};
 std::atomic_bool g_introHookWReady{false},g_introHook2Ready{false};
-std::atomic_int g_captureHotkey{0},g_menuVK{VK_INSERT},g_consoleScan{0x29};
+std::atomic_int g_captureHotkey{0},g_menuVK{VK_HOME},g_consoleScan{0x29};
 std::atomic_int g_cheatShopVK{VK_F1},g_smlConsoleVK{0};
 std::atomic_int g_flyVK{VK_F2},g_teleportVK{VK_F3},g_flySpeed{600};
 std::atomic_bool g_flyActive{false},g_flyNeedsOrigin{true},g_teleportPending{false};
@@ -60,9 +60,9 @@ float g_blendWorld=0.f,g_blendFps=0.f;
 void ResetFovBlend(){g_blendCamera=0;g_blendTick=0;}
 
 
-std::atomic_int g_worldFov{90},g_fpsFov{85},g_aimFov{80},g_sniperFov{80};
+std::atomic_int g_worldFov{120},g_fpsFov{105},g_aimFov{105},g_sniperFov{30};
 uint64_t g_aimTailUntil=0;
-std::atomic_bool g_worldEnabled{false},g_fpsEnabled{false};
+std::atomic_bool g_worldEnabled{true},g_fpsEnabled{true};
 std::atomic_bool g_captureCamera{false},g_autoCamera{true};
 std::atomic_uint g_autoCameraCaptures{0},g_autoCameraReleases{0};
 std::atomic_uintptr_t g_autoCandidate{0};
@@ -156,23 +156,23 @@ void InitPathAndSettings(){
     slash[1]=0;std::wstring dir(path);
     g_ini=dir+L"CRToiEnhanced.ini";
     g_log=dir+L"CRToiEnhanced.log";
-    g_menuVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"MenuVirtualKey",VK_INSERT,g_ini.c_str())),8,254);
+    g_menuVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"MenuVirtualKey",VK_HOME,g_ini.c_str())),8,254);
     g_cheatShopVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"CheatShopVirtualKey",VK_F1,g_ini.c_str())),8,254);
     g_flyVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"FreecamVirtualKey",VK_F2,g_ini.c_str())),8,254);
     g_teleportVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"TeleportVirtualKey",VK_F3,g_ini.c_str())),8,254);
     g_flySpeed=std::clamp(int(GetPrivateProfileIntW(L"Freecam",L"Speed",600,g_ini.c_str())),100,2000);
     g_smlConsoleVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"SMLConsoleVirtualKey",0,g_ini.c_str())),0,254);
     g_consoleScan=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"DeveloperConsoleScanCode",41,g_ini.c_str())),1,127);
-    g_worldFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"WorldFOV",90,g_ini.c_str())),75,130);
-    g_aimFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"AimFOV",80,g_ini.c_str())),20,130);
-    g_sniperFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"SniperFOV",80,g_ini.c_str())),20,130);
-    g_worldEnabled=GetPrivateProfileIntW(L"Camera",L"WorldFOVEnabled",0,g_ini.c_str())!=0;
-    g_fpsEnabled=GetPrivateProfileIntW(L"Camera",L"FPSFOVEnabled",0,g_ini.c_str())!=0;
+    g_worldFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"WorldFOV",120,g_ini.c_str())),75,130);
+    g_aimFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"AimFOV",105,g_ini.c_str())),20,130);
+    g_sniperFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"SniperFOV",30,g_ini.c_str())),20,130);
+    g_worldEnabled=GetPrivateProfileIntW(L"Camera",L"WorldFOVEnabled",1,g_ini.c_str())!=0;
+    g_fpsEnabled=GetPrivateProfileIntW(L"Camera",L"FPSFOVEnabled",1,g_ini.c_str())!=0;
     g_autoCamera=GetPrivateProfileIntW(L"Camera",L"AutoCaptureGameplay",1,g_ini.c_str())!=0;
     crtoi::hub::SetEnabled(GetPrivateProfileIntW(L"Hub",L"AllowCompletedChapterReentry",1,g_ini.c_str())!=0);
     g_skipStartupVideos=GetPrivateProfileIntW(L"Startup",L"SkipIntroVideos",1,g_ini.c_str())!=0;
-    g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",85,g_ini.c_str())),60,130);
-    Log(L"CRToi V0.9H TEST: Independent aiming/sniper FOV (80 defaults); smooth absolute transitions; native shop Close path. Original V0.9B hub reentry restored at user request.");
+    g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",105,g_ini.c_str())),60,130);
+    Log(L"CRToi V0.9I TEST: Independent aiming/sniper FOV (80 defaults); smooth absolute transitions; native shop Close path. Original V0.9B hub reentry restored at user request.");
 }
 // Suppress ONLY the three documented startup MP4 files in Crisol's
 // Content/Movies directory while the game is initializing. This avoids
@@ -805,12 +805,12 @@ void DrawMenu(){
     layout::StyleScope style;
     ImGui::SetNextWindowSize(ImVec2(720,555),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(520,370),ImVec2(1300,1020));
-    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.9H NATIVE SHOP + CAMERA TEST",
+    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.9I NATIVE SHOP + CAMERA TEST",
         &open,ImGuiWindowFlags_NoCollapse)){
         ImGui::TextColored(ImVec4(.52f,.83f,1.f,1.f),"CRISOL ENHANCED PC MOD");
-        ImGui::SameLine();ImGui::TextDisabled("V0.9H | NATIVE SHOP + CAMERA");
+        ImGui::SameLine();ImGui::TextDisabled("V0.9I | NATIVE SHOP + CAMERA");
         ImGui::Separator();ImGui::Spacing();
-        ImGui::SetNextItemOpen(true,ImGuiCond_Once);
+        ImGui::SetNextItemOpen(false,ImGuiCond_Once);
         if(layout::Group("Camera / Gameplay ownership")){
             if(!g_cameraHookReady.load()){
                 ImGui::TextColored(ImVec4(1.f,.72f,.42f,1.f),
@@ -846,7 +846,7 @@ void DrawMenu(){
             }
             ImGui::Spacing();
         }
-        ImGui::SetNextItemOpen(true,ImGuiCond_Once);
+        ImGui::SetNextItemOpen(false,ImGuiCond_Once);
         if(layout::Group("Freecam / Teleport to camera")){
             ImGui::TextWrapped("F2: detach the view. Fly to a clear location, then F3: teleport the player there and restore normal camera.");
             ImGui::TextDisabled("WASD / ZQSD, Space up, Ctrl down, Shift fast. Choose an empty landing area.");
@@ -879,6 +879,7 @@ void DrawMenu(){
             ImGui::Text("Flight frames: %u | teleports: %u succeeded, %u refused",
                 g_flyFrames.load(),g_teleportSuccess.load(),g_teleportFailed.load());
         }
+        ImGui::SetNextItemOpen(false,ImGuiCond_Once);
         if(layout::Group("Camera / Field of View")){
             bool world=g_worldEnabled.load();
             if(ImGui::Checkbox("World FOV override",&world)){
@@ -887,17 +888,17 @@ void DrawMenu(){
             ImGui::TextDisabled("Independent normal, aiming and sniper FOV with smooth transitions.");
             if(world){
                 float value=float(g_worldFov.load());
-                if(layout::NumberRow("World FOV","WorldFOV",&value,75.f,130.f,90.f,
+                if(layout::NumberRow("World FOV","WorldFOV",&value,75.f,130.f,120.f,
                     "%.0f deg","%.0f")){
                     g_worldFov=int(std::lround(value));SaveSettings();
                 }
             }
             float aim=float(g_aimFov.load());
-            if(layout::NumberRow("Aim FOV","AimFOV",&aim,20.f,130.f,80.f,"%.0f deg","%.0f")){
+            if(layout::NumberRow("Aim FOV","AimFOV",&aim,20.f,130.f,105.f,"%.0f deg","%.0f")){
                 g_aimFov=int(std::lround(aim));SaveSettings();
             }
             float sniper=float(g_sniperFov.load());
-            if(layout::NumberRow("Sniper FOV","SniperFOV",&sniper,20.f,130.f,80.f,"%.0f deg","%.0f")){
+            if(layout::NumberRow("Sniper FOV","SniperFOV",&sniper,20.f,130.f,30.f,"%.0f deg","%.0f")){
                 g_sniperFov=int(std::lround(sniper));SaveSettings();
             }
             ImGui::Spacing();
@@ -908,7 +909,7 @@ void DrawMenu(){
             ImGui::TextDisabled("Separate Unreal first-person rendering FOV; only when the game's native first-person flag is active.");
             if(fps){
                 float value=float(g_fpsFov.load());
-                if(layout::NumberRow("FPS / Weapon FOV","FPSFOV",&value,60.f,130.f,85.f,
+                if(layout::NumberRow("FPS / Weapon FOV","FPSFOV",&value,60.f,130.f,105.f,
                     "%.0f deg","%.0f")){
                     g_fpsFov=int(std::lround(value));SaveSettings();
                 }
@@ -920,7 +921,7 @@ void DrawMenu(){
                 SaveSettings();
             }
         }
-        ImGui::SetNextItemOpen(true,ImGuiCond_Once);
+        ImGui::SetNextItemOpen(false,ImGuiCond_Once);
         if(layout::Group("Fair / Revisit completed chapters (TEST)")){
             bool reentry=crtoi::hub::Enabled();
             if(ImGui::Checkbox("Allow revisiting completed chapters",&reentry)){
@@ -938,7 +939,7 @@ void DrawMenu(){
             ImGui::Text("Permissions allowed: %u | unlock requests: %u",crtoi::hub::PermissionChanges(),crtoi::hub::LockChanges());
             if(crtoi::hub::RejectedSchemas())ImGui::TextDisabled("Skipped unrecognized door data: %u",crtoi::hub::RejectedSchemas());
         }
-        ImGui::SetNextItemOpen(true,ImGuiCond_Once);
+        ImGui::SetNextItemOpen(false,ImGuiCond_Once);
         if(layout::Group("CheatShop (SML external mod)")){
             ImGui::TextWrapped("Press once to open; press again to run the native Close button path. Its own Close button remains available.");
             ImGui::TextDisabled("Requires SML. Uses the game's command path without typing into the console.");
@@ -967,7 +968,7 @@ void DrawMenu(){
                 crtoi::nativebridge::Dispatches(),crtoi::nativebridge::Cancellations());
             if(crtoi::nativebridge::ShopPending())ImGui::TextDisabled("Waiting for the game to handle your request...");
         }
-        ImGui::SetNextItemOpen(true,ImGuiCond_Once);
+        ImGui::SetNextItemOpen(false,ImGuiCond_Once);
         if(layout::Group("Startup / Skip Intro")){
             bool skip=g_skipStartupVideos.load();
             if(ImGui::Checkbox("Skip startup logo videos",&skip)){
@@ -983,6 +984,7 @@ void DrawMenu(){
             ImGui::TextDisabled("Toggle is saved; restart the game to test startup skipping.");
             ImGui::TextDisabled("If blocked = 0, the game's startup movie loading bypassed our hooks.");
         }
+        ImGui::SetNextItemOpen(false,ImGuiCond_Once);
         if(layout::Group("Controls")){
             ImGui::Text("Toggle overlay: virtual key %d",g_menuVK.load());
             if(ImGui::Button(g_captureHotkey.load()==1?
@@ -993,6 +995,7 @@ void DrawMenu(){
                 g_menuVK=VK_INSERT;g_captureHotkey=0;SaveSettings();
             }
         }
+        ImGui::SetNextItemOpen(false,ImGuiCond_Once);
         if(layout::Group("About / Diagnostics")){
             ImGui::Text("Renderer: %s",g_isDx12?"DX12 (D3D11On12)":"DX11");
             ImGui::Text("GetCameraView calls: %u | eligible first-person: %u",

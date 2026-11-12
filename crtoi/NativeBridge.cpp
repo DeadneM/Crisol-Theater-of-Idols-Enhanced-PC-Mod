@@ -296,9 +296,10 @@ void Service(void* world) {
     // at 039E160E. World-owned weak-controller resolution stays native.
     void* controller=reinterpret_cast<FirstControllerFn>(image+0x3FA9D70)(world);
     if(!LiveObject(controller)||!DerivedFrom(controller,"PlayerController"))return;
-    if(!pendingAt.compare_exchange_strong(requested,0))return;
     static uint64_t lastDispatch=0;
-    if(lastDispatch&&now-lastDispatch<750){++cancellations;return;}
+    // Retain the queued press through debounce instead of silently dropping it.
+    if(lastDispatch&&now-lastDispatch<750)return;
+    if(!pendingAt.compare_exchange_strong(requested,0))return;
     if(closeSupported.load()&&ValidShopGraph(shopWidget,shopGraph)&&ShopInViewport(shopWidget)) {
         lastDispatch=now;
         if(!CloseShop())++cancellations;
