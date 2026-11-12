@@ -2,6 +2,10 @@
 
 Independent x64 ASI mod for **Crisol: Theater of Idols**. Built around an in-game Dear ImGui menu and a DXGI ASI loader.
 
+## V0.9D restoration requested by user
+
+Restores the exact V0.9B chapter-door mechanism while retaining V0.9C native CheatShop and cinematic FOV changes. Access was confirmed by the user; enemy/pickup respawn is an observed limitation, not a request to remove access. No save repair or restoration. Experimental pending combined gameplay confirmation.
+
 ## Versions
 
 - **`dev/v0.9c-native-console-camera`: V0.9C experimental native CheatShop dispatch

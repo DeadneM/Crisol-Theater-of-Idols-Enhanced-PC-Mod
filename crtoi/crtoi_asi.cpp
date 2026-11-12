@@ -13,6 +13,7 @@
 #include "imgui_impl_win32.h"
 #include "OverlayLayout.h"
 #include "NativeBridge.h"
+#include "HubReentry.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -135,6 +136,7 @@ void SaveSettings(){
     WritePrivateProfileStringW(L"Camera",L"FPSFOVEnabled",g_fpsEnabled.load()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"AutoCaptureGameplay",g_autoCamera.load()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"KeepFOVInPlayerCinematics",g_keepCinematicFov.load()?L"1":L"0",g_ini.c_str());
+    WritePrivateProfileStringW(L"Hub",L"AllowCompletedChapterReentry",crtoi::hub::Enabled()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Startup",L"SkipIntroVideos",g_skipStartupVideos.load()?L"1":L"0",g_ini.c_str());
     swprintf_s(v,L"%d",g_fpsFov.load());WritePrivateProfileStringW(L"Camera",L"FPSFOV",v,g_ini.c_str());
 }
@@ -158,9 +160,10 @@ void InitPathAndSettings(){
     g_fpsEnabled=GetPrivateProfileIntW(L"Camera",L"FPSFOVEnabled",0,g_ini.c_str())!=0;
     g_autoCamera=GetPrivateProfileIntW(L"Camera",L"AutoCaptureGameplay",1,g_ini.c_str())!=0;
     g_keepCinematicFov=GetPrivateProfileIntW(L"Camera",L"KeepFOVInPlayerCinematics",1,g_ini.c_str())!=0;
+    crtoi::hub::SetEnabled(GetPrivateProfileIntW(L"Hub",L"AllowCompletedChapterReentry",1,g_ini.c_str())!=0);
     g_skipStartupVideos=GetPrivateProfileIntW(L"Startup",L"SkipIntroVideos",1,g_ini.c_str())!=0;
     g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",85,g_ini.c_str())),60,130);
-    Log(L"CRToi V0.9C TEST: native CheatShop dispatch, player-cinematic FOV retention and safer camera acquisition. Hub reentry withdrawn.");
+    Log(L"CRToi V0.9D TEST: native CheatShop dispatch, player-cinematic FOV retention and safer camera acquisition. Original V0.9B hub reentry restored at user request.");
 }
 // Suppress ONLY the three documented startup MP4 files in Crisol's
 // Content/Movies directory while the game is initializing. This avoids
@@ -797,10 +800,10 @@ void DrawMenu(){
     layout::StyleScope style;
     ImGui::SetNextWindowSize(ImVec2(720,555),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(520,370),ImVec2(1300,1020));
-    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.9C NATIVE SHOP + CAMERA TEST",
+    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.9D NATIVE SHOP + CAMERA TEST",
         &open,ImGuiWindowFlags_NoCollapse)){
         ImGui::TextColored(ImVec4(.52f,.83f,1.f,1.f),"CRISOL ENHANCED PC MOD");
-        ImGui::SameLine();ImGui::TextDisabled("V0.9C | NATIVE SHOP + CAMERA");
+        ImGui::SameLine();ImGui::TextDisabled("V0.9D | NATIVE SHOP + CAMERA");
         ImGui::Separator();ImGui::Spacing();
         ImGui::SetNextItemOpen(true,ImGuiCond_Once);
         if(layout::Group("Camera / Gameplay ownership")){
@@ -908,6 +911,24 @@ void DrawMenu(){
                 g_worldFov=90;g_fpsFov=85;
                 SaveSettings();
             }
+        }
+        ImGui::SetNextItemOpen(true,ImGuiCond_Once);
+        if(layout::Group("Fair / Revisit completed chapters (TEST)")){
+            bool reentry=crtoi::hub::Enabled();
+            if(ImGui::Checkbox("Allow revisiting completed chapters",&reentry)){
+                crtoi::hub::SetEnabled(reentry);SaveSettings();
+                Log(reentry?L"Hub reentry requested ON. Reload the hub save to apply.":
+                    L"Hub reentry requested OFF. Reload the hub save to apply.");
+            }
+            ImGui::TextWrapped("Enable before loading the Fair, or reload your hub save. Uses existing chapter doors with the original V0.9B mechanism. Enemies and pickups may respawn on return.");
+            ImGui::TextWrapped("Test one completed chapter and its return to the Fair before trying another. Chapter 3 keeps the game's normal access rule.");
+            ImGui::Text("Gate controls: %s",crtoi::hub::Ready()?"ready":"unavailable for this game build");
+            const unsigned seen=crtoi::hub::SeenChapters();
+            ImGui::Text("Hub entrances observed: %s %s %s",(seen&1)?"1":"-",(seen&2)?"2":"-",(seen&4)?"3":"-");
+            const unsigned returns=crtoi::hub::SeenReturns();
+            ImGui::Text("Return doors observed: %s %s",(returns&1)?"1":"-",(returns&2)?"2":"-");
+            ImGui::Text("Permissions allowed: %u | unlock requests: %u",crtoi::hub::PermissionChanges(),crtoi::hub::LockChanges());
+            if(crtoi::hub::RejectedSchemas())ImGui::TextDisabled("Skipped unrecognized door data: %u",crtoi::hub::RejectedSchemas());
         }
         ImGui::SetNextItemOpen(true,ImGuiCond_Once);
         if(layout::Group("CheatShop (SML external mod)")){
@@ -1236,6 +1257,7 @@ extern "C" __declspec(dllexport) void WINAPI CRToi_Initialize() {
             InstallIntroVideoHooks();
             InstallCameraHook();
             crtoi::nativebridge::Initialize(&Log);
+            crtoi::hub::Install(&Log);
             InstallCineCameraHook();
         }
     });

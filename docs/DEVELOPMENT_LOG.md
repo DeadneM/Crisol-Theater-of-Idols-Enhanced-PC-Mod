@@ -153,3 +153,7 @@ are recorded in `V09C_NATIVE_CONSOLE_CAMERA.md`. Validation remains experimental
 - Artifact 13936424260. Install ZIP SHA-256: `8a0d54414358c49396fa1963267ff4672148498296f9783ce1e6d75299b13e4e`.
 - Installed after verified binary/INI and eight-file SaveGames backup. Personal INI preserved byte-for-byte, including FOV 120/105 and HOME menu. No saves restored or edited.
 - V0.9B door hook removed; prior saved world state is not repaired. Native CheatShop and cinematic FOV remain EXPERIMENTAL, awaiting the user's F1 open/close and load-to-cinematic-to-gameplay test. No stable promotion.
+
+## V0.9D user correction
+
+User explicitly requests restoration of working V0.9B gates; respawn was an observation, not a rejection of access. The earlier removal was an incorrect scope decision. Restore identical gate implementation, preserve V0.9C native CheatShop/cinematic FOV, personal settings and saves. Goal: original access plus retained camera/input changes. Criterion: chapter entrance/return works as before; respawn remains documented, not repaired. No additional reverse engineering in this iteration.
