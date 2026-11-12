@@ -146,3 +146,10 @@ dispatch and retain cinematic FOV without acquiring a cinematic gameplay baselin
 Success: actual SML open/close, moving/ending cinematics, FOV recovery after load,
 native zoom intact, and no door/progression hooks. Static ABI evidence and limits
 are recorded in `V09C_NATIVE_CONSOLE_CAMERA.md`. Validation remains experimental.
+## V0.9C delivery checkpoint
+
+- CONSTRUCTED: code `3547e08a1918a2067647c1cf8ed88036d2bd243f`, GitHub run [43205129608](https://github.com/DeadneM/Crisol-Theater-of-Idols-Enhanced-PC-Mod/actions/runs/43205129608) succeeded.
+- CONTROLLED: unsupported-host native-call CTest passed; six read-only save inspector tests passed locally. Package contains exactly dxgi.dll and CRToiEnhanced.asi at root; x64 headers/exports checked. Defender reported no threats.
+- Artifact 13936424260. Install ZIP SHA-256: `8a0d54414358c49396fa1963267ff4672148498296f9783ce1e6d75299b13e4e`.
+- Installed after verified binary/INI and eight-file SaveGames backup. Personal INI preserved byte-for-byte, including FOV 120/105 and HOME menu. No saves restored or edited.
+- V0.9B door hook removed; prior saved world state is not repaired. Native CheatShop and cinematic FOV remain EXPERIMENTAL, awaiting the user's F1 open/close and load-to-cinematic-to-gameplay test. No stable promotion.

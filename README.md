@@ -9,7 +9,7 @@ Independent x64 ASI mod for **Crisol: Theater of Idols**. Built around an in-gam
   level-state reset report. No save repair or automatic restoration is performed.
   Keeps your FOV on active cinematic cameras and waits for normal gameplay
   projection before automatic acquisition. [Native audit / test plan](docs/V09C_NATIVE_CONSOLE_CAMERA.md).
-  Gameplay confirmation remains required.
+  [V0.9C build / artifact](https://github.com/DeadneM/Crisol-Theater-of-Idols-Enhanced-PC-Mod/actions/runs/43205129608/artifacts/13936424260): built, package-checked and installed; gameplay confirmation remains required.
 
 - **`dev/v0.9b-hub-reentry-test`: V0.9B WITHDRAWN — level-state persistence failed.**
   Historical test information follows; do not treat successful access as a safe replay.
@@ -100,3 +100,4 @@ See [cumulative investigation](docs/HubReentrySolariResearch.md) and
 achievement-list decoding. Its reports are private player data and must stay local.
 
 The dark ImGui UI layout was adapted from [Darksiders Genesis Enhanced PC Mod](https://github.com/DeadneM/Darksiders-Genesis-Enhanced-PC-Mod); the Crisol project has its **own repository and build pipeline**. See [project notes](crtoi/README.txt).
+
