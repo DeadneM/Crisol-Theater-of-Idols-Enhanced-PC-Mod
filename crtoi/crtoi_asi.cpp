@@ -13,6 +13,7 @@
 #include "imgui_impl_win32.h"
 #include "OverlayLayout.h"
 #include "NativeBridge.h"
+#include "FovPolicy.h"
 #include "HubReentry.h"
 #include <algorithm>
 #include <atomic>
@@ -166,7 +167,7 @@ void InitPathAndSettings(){
     crtoi::hub::SetEnabled(GetPrivateProfileIntW(L"Hub",L"AllowCompletedChapterReentry",1,g_ini.c_str())!=0);
     g_skipStartupVideos=GetPrivateProfileIntW(L"Startup",L"SkipIntroVideos",1,g_ini.c_str())!=0;
     g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",85,g_ini.c_str())),60,130);
-    Log(L"CRToi V0.9E TEST: player-control-only FOV with smooth gameplay recovery; native menus/cinematics. Original V0.9B hub reentry restored at user request.");
+    Log(L"CRToi V0.9F TEST: gameplay FOV restored, native aiming delta, open-only CheatShop; native menus/cinematics. Original V0.9B hub reentry restored at user request.");
 }
 // Suppress ONLY the three documented startup MP4 files in Crisol's
 // Content/Movies directory while the game is initializing. This avoids
@@ -612,8 +613,8 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
        !crtoi::nativebridge::PlayerCameraControllable(playerOwner)){
         ResetFovBlend();return;
     }
-    if((object[0x262]&0x04)==0||(flags&0x02)==0||!std::isfinite(baseFPS)||baseWorld<55.f||baseWorld>125.f||
-       baseFPS<40.f||baseFPS>150.f)return;
+    if((object[0x262]&0x04)==0||(flags&0x02)==0||!std::isfinite(baseFPS)||baseWorld<=1.f||baseWorld>=179.f||
+       baseFPS<=1.f||baseFPS>=179.f)return;
     ++g_firstPersonCandidates;
     const uintptr_t ptr=reinterpret_cast<uintptr_t>(camera);
     if(g_captureCamera.load()&&!aiming){
@@ -627,34 +628,24 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
     g_playerLastSeen=GetTickCount64();
     g_nativeWorld.store(baseWorld);
     g_nativeFps.store(baseFPS);
-    // Aiming, scope zoom, camera blends, FOV animation or gameplay cameras
-    // outside their captured baseline must remain fully under native control.
-    if(aiming ||
-       std::abs(baseWorld-g_baselineWorld.load())>1.0f ||
-       std::abs(baseFPS-g_baselineFps.load())>1.0f) {
-        if(g_flyActive.load())StopFly(L"Freecam disabled by zoom, ADS or native FOV transition.");
-        ResetFovBlend();
-        ++g_scopeBypass;
-        return;
-    }
+    // Keep native aiming/zoom changes relative to the acquired normal baseline.
     HandleFlyCamera(camera,view,aiming);
     const uint64_t now=GetTickCount64();
     if(g_blendCamera!=ptr||!g_blendTick||now-g_blendTick>250){
-        g_blendCamera=ptr;g_blendWorld=baseWorld;g_blendFps=baseFPS;g_blendTick=now;
+        g_blendCamera=ptr;g_blendWorld=0.f;g_blendFps=0.f;g_blendTick=now;
     }
     // Frame-rate independent exponential easing; no writes outside gameplay.
     const float seconds=float(now-g_blendTick)*0.001f;g_blendTick=now;
-    const float alpha=1.f-std::exp(-seconds/0.15f);
-    g_blendWorld+=(float(std::clamp(g_worldFov.load(),75,130))-g_blendWorld)*alpha;
-    g_blendFps+=(float(std::clamp(g_fpsFov.load(),60,130))-g_blendFps)*alpha;
+    g_blendWorld=crtoi::fov::EaseOffset(g_blendWorld,float(std::clamp(g_worldFov.load(),75,130))-g_baselineWorld.load(),seconds);
+    g_blendFps=crtoi::fov::EaseOffset(g_blendFps,float(std::clamp(g_fpsFov.load(),60,130))-g_baselineFps.load(),seconds);
     if(g_worldEnabled.load()){
-        const float value=g_blendWorld;
+        const float value=crtoi::fov::ApplyOffset(baseWorld,g_blendWorld);
         std::memcpy(view+0x30,&value,4);
         std::memcpy(view+0x34,&value,4);
         ++g_worldApplied;
     }
     if(g_fpsEnabled.load()){
-        const float value=g_blendFps;
+        const float value=crtoi::fov::ApplyOffset(baseFPS,g_blendFps);
         std::memcpy(view+0x38,&value,4);
         ++g_fpsApplied;
     }
@@ -804,10 +795,10 @@ void DrawMenu(){
     layout::StyleScope style;
     ImGui::SetNextWindowSize(ImVec2(720,555),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(520,370),ImVec2(1300,1020));
-    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.9E NATIVE SHOP + CAMERA TEST",
+    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.9F NATIVE SHOP + CAMERA TEST",
         &open,ImGuiWindowFlags_NoCollapse)){
         ImGui::TextColored(ImVec4(.52f,.83f,1.f,1.f),"CRISOL ENHANCED PC MOD");
-        ImGui::SameLine();ImGui::TextDisabled("V0.9E | NATIVE SHOP + CAMERA");
+        ImGui::SameLine();ImGui::TextDisabled("V0.9F | NATIVE SHOP + CAMERA");
         ImGui::Separator();ImGui::Spacing();
         ImGui::SetNextItemOpen(true,ImGuiCond_Once);
         if(layout::Group("Camera / Gameplay ownership")){
@@ -883,7 +874,7 @@ void DrawMenu(){
             if(ImGui::Checkbox("World FOV override",&world)){
                 g_worldEnabled=world;SaveSettings();
             }
-            ImGui::TextDisabled("Native aim/scope zoom keeps priority. Gameplay FOV returns smoothly.");
+            ImGui::TextDisabled("Aiming follows the native FOV difference relative to your normal FOV setting.");
             if(world){
                 float value=float(g_worldFov.load());
                 if(layout::NumberRow("World FOV","WorldFOV",&value,75.f,130.f,90.f,
@@ -931,9 +922,9 @@ void DrawMenu(){
         }
         ImGui::SetNextItemOpen(true,ImGuiCond_Once);
         if(layout::Group("CheatShop (SML external mod)")){
-            ImGui::TextWrapped("Launch SML's 'cheatshop' command with one key press. Press again to close its shop.");
+            ImGui::TextWrapped("Open CheatShop with one key press. Close using its own Close button to restore player control.");
             ImGui::TextDisabled("Requires SML. Uses the game's command path without typing into the console.");
-            if(ImGui::Button("Open / close CheatShop")){
+            if(ImGui::Button("Open CheatShop")){
                 g_menuOpen=false;
                 open=false;
                 RequestCheatShop();

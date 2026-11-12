@@ -24,8 +24,9 @@ std::atomic<HWND> requestedWindow{nullptr};
 std::atomic_uint requests{0},dispatches{0},cancellations{0};
 using WorldTickFn=void(__fastcall*)(void*,int,float);
 WorldTickFn originalTick=nullptr;
-thread_local void* tickingWorld=nullptr;
-thread_local bool tickingPlayable=false;
+std::atomic<void*> lastTickWorld{nullptr};
+std::atomic_uint64_t lastTickAt{0};
+std::atomic_bool lastTickPlayable{false};
 bool Range(const void* ptr,size_t size,bool write=false) {
     if(!ptr||!size)return false;
     MEMORY_BASIC_INFORMATION mbi{};
@@ -169,6 +170,12 @@ bool CameraController(void* owner,void*& controller) {
         CachedProperty(cache,cls,"Controller","ObjectProperty",8,p)&&
         Read(owner,size_t(p.offset),controller)&&LiveObject(controller)&&DerivedFrom(controller,"PlayerController");
 }
+bool ControllerCursor(void* controller,bool& visible) {
+    thread_local FieldCache cache;void* cls=nullptr;Property p;uint8_t raw=0;
+    if(!Read(controller,0x10,cls)||!CachedProperty(cache,cls,"bShowMouseCursor","BoolProperty",1,p)||
+       !Read(controller,size_t(p.offset)+p.byteOffset,raw))return false;
+    visible=(raw&p.fieldMask)!=0;return true;
+}
 struct FString {wchar_t* data;int32_t count,capacity;};
 static_assert(sizeof(FString)==16&&offsetof(FString,count)==8);
 using FirstControllerFn=void*(__fastcall*)(void*);
@@ -237,6 +244,15 @@ void Service(void* world) {
     void* controller=reinterpret_cast<FirstControllerFn>(image+0x3FA9D70)(world);
     if(!LiveObject(controller)||!DerivedFrom(controller,"PlayerController"))return;
     if(!pendingAt.compare_exchange_strong(requested,0))return;
+    bool cursor=false;
+    if(!ControllerCursor(controller,cursor)||cursor) {
+        ++cancellations;
+        if(logger)logger(L"CheatShop: open-only shortcut ignored while a cursor/menu is active. Use the shop Close button to restore control.");
+        return;
+    }
+    static uint64_t lastDispatch=0;
+    if(lastDispatch&&now-lastDispatch<750){++cancellations;return;}
+    lastDispatch=now;
     if(!ExecuteShop(controller)) {
         ++cancellations;
         if(logger)logger(L"CheatShop: controller or native dispatch checks failed. No keyboard fallback used.");
@@ -245,10 +261,9 @@ void Service(void* world) {
 void __fastcall HookWorldTick(void* world,int tickType,float delta) {
     thread_local bool busy=false;
     const bool outer=!busy;busy=true;
-    void* previousWorld=tickingWorld;const bool previousPlayable=tickingPlayable;
-    tickingWorld=world;tickingPlayable=tickType!=2&&delta>0.f;
+    lastTickWorld=world;lastTickPlayable=tickType!=2&&delta>0.f;lastTickAt=GetTickCount64();
     if(originalTick)originalTick(world,tickType,delta);
-    tickingWorld=previousWorld;tickingPlayable=previousPlayable;
+
     if(outer&&consoleSupported.load())Service(world);
     if(outer)busy=false;
 }
@@ -262,11 +277,14 @@ void Initialize(Logger log) {
     constexpr uint8_t getter[]={0x83,0xb9,0x20,0x02,0x00,0x00,0x00,0x7e,0x0c};
     constexpr uint8_t threadSetter[]={0x89,0x05,0x0f,0x71,0x65,0x05};
     constexpr uint8_t tick[]={0x48,0x8b,0xc4,0x48,0x89,0x58,0x20,0x55,0x56,0x57,0x41,0x54};
+    constexpr uint8_t moveGetter[]={0xff,0x90,0x30,0x08,0x00,0x00};
+    constexpr uint8_t lookGetter[]={0xff,0x90,0x48,0x08,0x00,0x00};
     constexpr uint8_t viewTarget[]={0xff,0x90,0xa8,0x07,0x00,0x00};
     struct Check {uintptr_t rva;const uint8_t* bytes;size_t size;};
     const Check checks[]={{0x39E162E,consoleDispatch,sizeof(consoleDispatch)},
         {0x3FA9D70,getter,sizeof(getter)},{0x40861D3,threadSetter,sizeof(threadSetter)},
-        {0x3A6CFF0,tick,sizeof(tick)},{0x37E0611,viewTarget,sizeof(viewTarget)}};
+        {0x3A6CFF0,tick,sizeof(tick)},{0x37E0611,viewTarget,sizeof(viewTarget)},
+        {0x37E0EB1,moveGetter,sizeof(moveGetter)},{0x37E0E81,lookGetter,sizeof(lookGetter)}};
     for(const auto& c:checks) {
         const void* p=reinterpret_cast<void*>(image+c.rva);
         if(!Range(p,c.size)||std::memcmp(p,c.bytes,c.size)) {
@@ -298,24 +316,27 @@ unsigned Requests() {return requests.load();}
 unsigned Dispatches() {return dispatches.load();}
 unsigned Cancellations() {return cancellations.load();}
 bool PlayerCameraControllable(void* owner) {
-    if(!supported.load()||!OnGameThread()||!tickingWorld||!tickingPlayable)return false;
-    void* controller=nullptr;void* cls=nullptr;bool cinematic=true;
+    if(!supported.load()||!OnGameThread()||!lastTickPlayable.load()||
+       GetTickCount64()-lastTickAt.load()>500)return false;
+    void* controller=nullptr;bool cinematic=true,cursor=true;
     if(!CameraController(owner,controller)||!ControllerCinematic(controller,cinematic)||cinematic||
-       !Read(controller,0x10,cls))return false;
-    // Reflected properties only: unknown schemas leave the game's FOV untouched.
-    thread_local FieldCache moveCache,lookCache,cursorCache;
-    Property move,look,cursor;uint8_t moveValue=0,lookValue=0,cursorValue=0;
-    if(!CachedProperty(moveCache,cls,"IgnoreMoveInput","ByteProperty",1,move)||
-       !CachedProperty(lookCache,cls,"IgnoreLookInput","ByteProperty",1,look)||
-       !CachedProperty(cursorCache,cls,"bShowMouseCursor","BoolProperty",1,cursor)||
-       !Read(controller,size_t(move.offset),moveValue)||
-       !Read(controller,size_t(look.offset),lookValue)||
-       !Read(controller,size_t(cursor.offset)+cursor.byteOffset,cursorValue)||
-       moveValue||lookValue||(cursorValue&cursor.fieldMask))return false;
-    void* table=nullptr;void* target=nullptr;
-    if(!Read(controller,0,table)||!Read(table,0x7A8,target))return false;
-    const uintptr_t address=reinterpret_cast<uintptr_t>(target);
-    if(address<image+0x1000||address>=image+0x7490000||!Range(target,16))return false;
+       !ControllerCursor(controller,cursor)||cursor)return false;
+    void* engine=nullptr;
+    if(!Read(reinterpret_cast<void*>(image),0x9944860,engine)||!LiveObject(engine))return false;
+    void* world=reinterpret_cast<WorldFromContextFn>(image+0x3F2BC10)(engine,owner,0);
+    if(world!=lastTickWorld.load())return false;
+    // execIsMoveInputIgnored 037E0EB1 and execIsLookInputIgnored 037E0E81:
+    // one-argument virtual getters returning bool in AL. No FFrame calls.
+    void* table=nullptr;void* target=nullptr;void* move=nullptr;void* look=nullptr;
+    if(!Read(controller,0,table)||!Read(table,0x7A8,target)||
+       !Read(table,0x830,move)||!Read(table,0x848,look))return false;
+    for(void* fn:{target,move,look}) {
+        const uintptr_t address=reinterpret_cast<uintptr_t>(fn);
+        if(address<image+0x1000||address>=image+0x7490000||!Range(fn,16))return false;
+    }
+    using InputIgnoredFn=bool(__fastcall*)(void*);
+    if(reinterpret_cast<InputIgnoredFn>(move)(controller)||
+       reinterpret_cast<InputIgnoredFn>(look)(controller))return false;
     return reinterpret_cast<ViewTargetFn>(target)(controller)==owner;
 }
 bool ActiveCinematicCamera(void* owner,bool dedicatedCineComponent,bool& cinematic) {

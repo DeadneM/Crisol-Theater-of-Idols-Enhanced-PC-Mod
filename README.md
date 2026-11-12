@@ -2,6 +2,10 @@
 
 Independent x64 ASI mod for **Crisol: Theater of Idols**. Built around an in-game Dear ImGui menu and a DXGI ASI loader.
 
+## V0.9F FOV recovery / native aiming delta
+
+Corrects V0.9E control-state checks; gameplay output preserves the native aiming difference on top of configured FOV. Menus/cinematics remain native, gameplay offset eases back. CheatShop shortcut opens only; close with its working native Close button. Original gates unchanged. Runtime confirmation pending.
+
 ## V0.9E gameplay-only FOV
 
 Latest instruction: native menus/cinematics, mod FOV only with player control, eased gameplay recovery. Original V0.9B gates and V0.9C CheatShop retained. Experimental, requires gameplay confirmation.
