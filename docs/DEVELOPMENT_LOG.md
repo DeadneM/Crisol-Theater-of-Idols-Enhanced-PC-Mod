@@ -128,3 +128,21 @@ separate; the user agrees this may be a display issue after returning to the hub
   enable it, reload the Fair save, test chapter 1 and return before chapter 2.
   Hook readiness/counters and actual progression retention need game verification.
   No stable promotion or map-count/Solari repair is claimed.
+
+## 2026-11-12 feedback / V0.9C
+
+- **V0.9B access confirmed by user, persistence REJECTED:** enemies and pickup
+  objects reappear. Successful access is not the requested safe reentry feature.
+- **V0.8B/V0.9B keyboard CheatShop macros REJECTED:** manual `cheatshop` still works.
+- Gameplay FOV appears to work; loading into a cinematic can leave the override
+  stuck. The user's latest clarification is to keep the mod FOV in cinematics.
+- Current saves copied/verified: both manual slots unchanged; autosave and
+  cumulative achievement counters changed; collection lists unchanged. No restore.
+- The installed INI's hub option was temporarily set to zero with an exact copy
+  of the preceding INI. The next source branch removes the rejected door hook.
+
+V0.9C objective: replace keyboard automation with verified native game-thread
+dispatch and retain cinematic FOV without acquiring a cinematic gameplay baseline.
+Success: actual SML open/close, moving/ending cinematics, FOV recovery after load,
+native zoom intact, and no door/progression hooks. Static ABI evidence and limits
+are recorded in `V09C_NATIVE_CONSOLE_CAMERA.md`. Validation remains experimental.

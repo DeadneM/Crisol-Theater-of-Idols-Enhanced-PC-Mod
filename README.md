@@ -4,7 +4,15 @@ Independent x64 ASI mod for **Crisol: Theater of Idols**. Built around an in-gam
 
 ## Versions
 
-- **`dev/v0.9b-hub-reentry-test`: V0.9B experimental completed-chapter reentry.**
+- **`dev/v0.9c-native-console-camera`: V0.9C experimental native CheatShop dispatch
+  and player-camera cinematic FOV.** Removes the V0.9B door hook after the user's
+  level-state reset report. No save repair or automatic restoration is performed.
+  Keeps your FOV on active cinematic cameras and waits for normal gameplay
+  projection before automatic acquisition. [Native audit / test plan](docs/V09C_NATIVE_CONSOLE_CAMERA.md).
+  Gameplay confirmation remains required.
+
+- **`dev/v0.9b-hub-reentry-test`: V0.9B WITHDRAWN — level-state persistence failed.**
+  Historical test information follows; do not treat successful access as a safe replay.
   Enable **Allow revisiting completed chapters** in the menu, then reload the Fair
   save. Completed chapter 1/2 entrances and their existing returns are targeted;
   chapter 3 retains native access. No progression-reset or Solari repair is included.

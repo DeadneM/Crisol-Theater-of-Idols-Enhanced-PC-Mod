@@ -1,6 +1,8 @@
 # V0.9B completed-chapter reentry audit
 
-Status: **experimental implementation, not gameplay-validated**.
+Status: **WITHDRAWN for progression persistence after the user's 2026-11-12 test**.
+The entrances work, but enemies/items reappear. V0.9C removes this hook entirely.
+The audit below is historical static evidence, NOT proof of map-state retention.
 Baseline: V0.8A camera/zoom/cinematic/startup code reported working by the user;
 V0.8B input correction and requested suspend-control removal retained. V0.8B
 CheatShop behavior is still awaiting user validation. Stable `main` remains V0.4A.

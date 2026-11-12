@@ -12,7 +12,7 @@
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
 #include "OverlayLayout.h"
-#include "HubReentry.h"
+#include "NativeBridge.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -50,8 +50,8 @@ std::atomic_uintptr_t g_flyOwner{0};
 double g_flyPosition[3]{},g_flyCameraOffset[3]{},g_flyStartOwner[3]{};
 ULONGLONG g_flyLastTick=0;
 
-std::atomic_bool g_cheatShopBusy{false};
-std::atomic_uint g_cheatShopAttempts{0},g_cheatShopSequences{0};
+std::atomic_bool g_keepCinematicFov{true},g_wasPlayerCinematic{false};
+std::atomic_uint g_cinematicFovFrames{0};
 
 std::atomic_int g_worldFov{90},g_fpsFov{85};
 std::atomic_bool g_worldEnabled{false},g_fpsEnabled{false};
@@ -134,8 +134,8 @@ void SaveSettings(){
     WritePrivateProfileStringW(L"Camera",L"WorldFOVEnabled",g_worldEnabled.load()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"FPSFOVEnabled",g_fpsEnabled.load()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"AutoCaptureGameplay",g_autoCamera.load()?L"1":L"0",g_ini.c_str());
+    WritePrivateProfileStringW(L"Camera",L"KeepFOVInPlayerCinematics",g_keepCinematicFov.load()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Startup",L"SkipIntroVideos",g_skipStartupVideos.load()?L"1":L"0",g_ini.c_str());
-    WritePrivateProfileStringW(L"Hub",L"AllowCompletedChapterReentry",crtoi::hub::Enabled()?L"1":L"0",g_ini.c_str());
     swprintf_s(v,L"%d",g_fpsFov.load());WritePrivateProfileStringW(L"Camera",L"FPSFOV",v,g_ini.c_str());
 }
 void InitPathAndSettings(){
@@ -157,10 +157,10 @@ void InitPathAndSettings(){
     g_worldEnabled=GetPrivateProfileIntW(L"Camera",L"WorldFOVEnabled",0,g_ini.c_str())!=0;
     g_fpsEnabled=GetPrivateProfileIntW(L"Camera",L"FPSFOVEnabled",0,g_ini.c_str())!=0;
     g_autoCamera=GetPrivateProfileIntW(L"Camera",L"AutoCaptureGameplay",1,g_ini.c_str())!=0;
+    g_keepCinematicFov=GetPrivateProfileIntW(L"Camera",L"KeepFOVInPlayerCinematics",1,g_ini.c_str())!=0;
     g_skipStartupVideos=GetPrivateProfileIntW(L"Startup",L"SkipIntroVideos",1,g_ini.c_str())!=0;
-    crtoi::hub::SetEnabled(GetPrivateProfileIntW(L"Hub",L"AllowCompletedChapterReentry",0,g_ini.c_str())!=0);
     g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",85,g_ini.c_str())),60,130);
-    Log(L"CRToi V0.9B TEST: opt-in completed-chapter hub reentry; V0.8B input/FOV/skip-intro retained.");
+    Log(L"CRToi V0.9C TEST: native CheatShop dispatch, player-cinematic FOV retention and safer camera acquisition. Hub reentry withdrawn.");
 }
 // Suppress ONLY the three documented startup MP4 files in Crisol's
 // Content/Movies directory while the game is initializing. This avoids
@@ -243,92 +243,12 @@ void InstallIntroVideoHooks(){
     Log(info);
 }
 
-// SML's cheatshop is an external mod console command. This small, opt-in
-// user-input macro invokes it on one F1 press. It does NOT patch/copy SML.
-// This first test does open the UE console briefly, automatically;
-// a truly console-free native Exec bridge remains separate future work.
-// Queue input to the game's own window. V0.8A's global SendInput sequence
-// reported successful injection even when Unreal did not accept the command.
-// WM_CHAR supplies actual text instead of synthetic VK_PACKET input.
-bool PostShopKey(WORD vk){
-    if(!g_gameHwnd||GetForegroundWindow()!=g_gameHwnd)return false;
-    const UINT scan=MapVirtualKeyW(vk,MAPVK_VK_TO_VSC);
-    const LPARAM down=1|(LPARAM(scan)<<16);
-    const bool pressed=PostMessageW(g_gameHwnd,WM_KEYDOWN,vk,down)!=FALSE;
-    const bool released=PostMessageW(g_gameHwnd,WM_KEYUP,vk,
-        down|(LPARAM(1)<<30)|(LPARAM(1)<<31))!=FALSE;
-    return pressed&&released;
-}
-// SML can be configured with Steam launch argument -consolekey=F10.
-// Respect F1..F12 without requiring users to duplicate that setting in INI.
-// Explicit SMLConsoleVirtualKey in our INI overrides this detection.
-int SMLLaunchConsoleVK(){
-    std::wstring command(GetCommandLineW());
-    for(wchar_t& c:command)c=static_cast<wchar_t>(towlower(c));
-    const auto pos=command.find(L"-consolekey=");
-    if(pos==std::wstring::npos)return 0;
-    const wchar_t* key=command.c_str()+pos+wcslen(L"-consolekey=");
-    if(*key!=L'f')return 0;
-    wchar_t* end=nullptr;
-    const long number=wcstol(key+1,&end,10);
-    if(end==key+1||number<1||number>12)return 0;
-    if(*end && !iswspace(*end) && *end!=L'"')return 0;
-    return VK_F1+int(number)-1;
-}
-DWORD WINAPI RunCheatShop(void*){
-    // The ImGui menu can trigger this too; let its input interception end.
-    Sleep(170);
-    if(!g_gameHwnd || GetForegroundWindow()!=g_gameHwnd){
-        Log(L"CheatShop: ignored; the game window is not foreground.");
-        g_cheatShopBusy=false;
-        return 0;
-    }
-    const int configured=g_smlConsoleVK.load();
-    const int launchVK=SMLLaunchConsoleVK();
-    const int openVK=configured?configured:(launchVK?launchVK:VK_OEM_3);
-    const bool opened=PostShopKey(WORD(openVK));
-    if(!opened){
-        Log(L"CheatShop: failed to inject console hotkey.");
-        g_cheatShopBusy=false;
-        return 0;
-    }
-    // Delay by a few rendered frames so Slate's console has focus.
-    Sleep(350);
-    if(GetForegroundWindow()!=g_gameHwnd){
-        Log(L"CheatShop: cancelled; game lost focus before typing.");
-        g_cheatShopBusy=false;
-        return 0;
-    }
-    constexpr wchar_t command[]=L"cheatshop";
-    bool sent=true;
-    for(const wchar_t* p=command;*p;++p){
-        if(GetForegroundWindow()!=g_gameHwnd||
-           !PostMessageW(g_gameHwnd,WM_CHAR,WPARAM(*p),1)){sent=false;break;}
-        Sleep(35);
-    }
-    if(sent){
-        Sleep(80);
-        sent=PostShopKey(VK_RETURN);
-    }
-    if(sent){
-        ++g_cheatShopSequences;
-        Log(L"CheatShop: command queued to game window (WM_CHAR). SML response still requires gameplay validation.");
-    }else{
-        Log(L"CheatShop: keyboard injection incomplete.");
-    }
-    Sleep(260);
-    g_cheatShopBusy=false;
-    return 0;
-}
+// Queue an explicit user request; execution happens on the verified game thread.
 void RequestCheatShop(){
-    if(g_cheatShopBusy.exchange(true))return;
-    ++g_cheatShopAttempts;
-    HANDLE h=CreateThread(nullptr,0,&RunCheatShop,nullptr,0,nullptr);
-    if(h)CloseHandle(h);
-    else{
-        Log(L"CheatShop: could not start shortcut dispatcher.");
-        g_cheatShopBusy=false;
-    }
+    if(crtoi::nativebridge::QueueShop(g_gameHwnd))
+        Log(L"CheatShop: explicit user request queued for native game-thread dispatch.");
+    else
+        Log(L"CheatShop: request not queued (unavailable, already pending, or game not foreground).");
 }
 
 // These native RVAs and struct offsets were verified against the exact game EXE.
@@ -339,6 +259,10 @@ void RequestCheatShop(){
 // No global PI/360 constant modifications; no executable file writes.
 using CameraViewFn=void(__fastcall*)(void*,float,void*);
 CameraViewFn g_originalCameraView=nullptr;
+CameraViewFn g_originalCineCameraView=nullptr;
+std::atomic_bool g_cineCameraHookReady{false};
+constexpr uintptr_t kCineCameraMethodRva=0x32BF020;
+constexpr uintptr_t kCineCameraVtableRva=0x7B15C30;
 constexpr uintptr_t kCameraMethodRva=0x363A3C0;
 constexpr uintptr_t kCameraVtableRva=0x7D25378;
 
@@ -588,8 +512,18 @@ void AutoCaptureCamera(void* camera,uint8_t* view,float world,float fps,bool aim
     const uint64_t now=GetTickCount64();
     const uintptr_t ptr=reinterpret_cast<uintptr_t>(camera);
     const uintptr_t owner=g_playerCamera.load();
+    const bool normalProjection=std::abs(world-90.f)<=1.f&&std::abs(fps-80.f)<=1.f;
     if(owner==ptr){
         g_playerLastSeen=now;
+        // Recover a camera that was previously acquired with a cinematic
+        // projection. Never adopt a non-default zoom as the gameplay baseline.
+        if(normalProjection&&(std::abs(g_baselineWorld.load()-90.f)>1.f||
+                              std::abs(g_baselineFps.load()-80.f)>1.f))
+            SetGameplayCamera(camera,world,fps,true);
+        return;
+    }
+    if(!normalProjection){
+        if(g_autoCandidate.load()==ptr){g_autoCandidate=0;g_autoCandidateFrames=0;}
         return;
     }
     // On a level load or after a cinematic camera swap, the previously
@@ -625,6 +559,43 @@ void AutoCaptureCamera(void* camera,uint8_t* view,float world,float fps,bool aim
     }
 }
 
+// Projection-only cinematic handling: native camera motion and timing stay intact.
+bool ApplyCinematicFov(void* camera,uint8_t* view,bool dedicated){
+    void* owner=nullptr;double root[3]{};bool cinematic=false;
+    const bool known=GetPlayerRootFromCamera(camera,owner,root)&&
+        crtoi::nativebridge::ActiveCinematicCamera(owner,dedicated,cinematic);
+    if(known&&cinematic){
+        if(!g_wasPlayerCinematic.exchange(true))
+            Log(L"Active cinematic camera detected. Gameplay baseline acquisition deferred.");
+        StopFly(L"Freecam stopped for active cinematic camera.");
+        if(g_keepCinematicFov.load()&&!ScopeInputHeld()){
+            float nativeWorld=0.f,nativeFps=0.f;uint32_t flags=0;
+            std::memcpy(&nativeWorld,view+0x30,4);std::memcpy(&nativeFps,view+0x38,4);
+            std::memcpy(&flags,view+0x68,4);
+            bool changed=false;
+            if(g_worldEnabled.load()&&std::isfinite(nativeWorld)&&nativeWorld>1.f&&nativeWorld<179.f){
+                const float desired=float(std::clamp(g_worldFov.load(),75,130));
+                std::memcpy(view+0x30,&desired,4);std::memcpy(view+0x34,&desired,4);
+                ++g_worldApplied;changed=true;
+            }
+            if(g_fpsEnabled.load()&&(flags&0x02)&&std::isfinite(nativeFps)&&nativeFps>=40.f&&nativeFps<=150.f){
+                const float desired=float(std::clamp(g_fpsFov.load(),60,130));
+                std::memcpy(view+0x38,&desired,4);++g_fpsApplied;changed=true;
+            }
+            if(changed)++g_cinematicFovFrames;
+        }
+        return true;
+    }
+    if(known&&!cinematic&&g_wasPlayerCinematic.exchange(false)){
+        if(g_autoCamera.load()){
+            g_playerCamera=0;g_playerLastSeen=0;g_autoCandidate=0;g_autoCandidateFrames=0;
+            ++g_autoCameraReleases;
+        }
+        Log(L"Cinematic camera ended. Automatic gameplay baseline recovery requested.");
+    }
+    return false;
+}
+
 void __fastcall HookCameraView(void* camera,float delta,void* out) {
     if(!g_originalCameraView)return;
     g_originalCameraView(camera,delta,out);
@@ -635,18 +606,18 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
     const uintptr_t expectedVtable=reinterpret_cast<uintptr_t>(exe)+kCameraVtableRva;
     if(*reinterpret_cast<uintptr_t*>(camera)!=expectedVtable)return;
     const auto* object=reinterpret_cast<const uint8_t*>(camera);
-    if((object[0x262]&0x04)==0)return;
     auto* view=reinterpret_cast<uint8_t*>(out);
     uint32_t flags{};
     float baseWorld=0.f,baseFPS=0.f;
     std::memcpy(&flags,view+0x68,4);
     std::memcpy(&baseWorld,view+0x30,4);
     std::memcpy(&baseFPS,view+0x38,4);
-    if((flags&0x02)==0 || !std::isfinite(baseWorld)||
-       !std::isfinite(baseFPS) || baseWorld<55.f ||baseWorld>125.f ||
-       baseFPS<40.f ||baseFPS>150.f)return;
-    ++g_firstPersonCandidates;
+    if(!std::isfinite(baseWorld)||baseWorld<=1.f||baseWorld>=179.f)return;
     bool aiming=ScopeInputHeld();
+    if(ApplyCinematicFov(camera,view,false))return;
+    if((object[0x262]&0x04)==0||(flags&0x02)==0||!std::isfinite(baseFPS)||baseWorld<55.f||baseWorld>125.f||
+       baseFPS<40.f||baseFPS>150.f)return;
+    ++g_firstPersonCandidates;
     const uintptr_t ptr=reinterpret_cast<uintptr_t>(camera);
     if(g_captureCamera.load()&&!aiming){
         // Keep the user-controlled fallback from V0.4A, unchanged in function.
@@ -713,6 +684,34 @@ void InstallCameraHook(){
     }
     g_cameraHookReady=true;
     Log(L"Camera hook verified and enabled: World/FirstPerson view-info output, not scalar patch.");
+}
+
+void __fastcall HookCineCameraView(void* camera,float delta,void* out){
+    if(!g_originalCineCameraView)return;
+    g_originalCineCameraView(camera,delta,out);
+    if(!camera||!out||!g_cineCameraHookReady.load())return;
+    const uintptr_t image=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if(*reinterpret_cast<const uintptr_t*>(camera)!=image+kCineCameraVtableRva)return;
+    ApplyCinematicFov(camera,static_cast<uint8_t*>(out),true);
+}
+void InstallCineCameraHook(){
+    if(!crtoi::nativebridge::Ready())return;
+    auto* exe=reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
+    constexpr uint8_t prologue[]={0x48,0x89,0x5c,0x24,0x08,0x57,0x48,0x83,0xec,0x30,0x0f,0x29,0x74,0x24,0x20};
+    const auto* table=reinterpret_cast<const uintptr_t*>(exe+kCineCameraVtableRva);
+    if(std::memcmp(exe+kCineCameraMethodRva,prologue,sizeof(prologue))||
+       table[0x600/8]!=reinterpret_cast<uintptr_t>(exe+0x32BFD20)||
+       table[0x608/8]!=reinterpret_cast<uintptr_t>(exe+0x32BFE70)||
+       table[0x620/8]!=reinterpret_cast<uintptr_t>(exe+kCineCameraMethodRva)){
+        Log(L"Cinematic FOV hook unavailable: native cine-camera signatures differ.");return;
+    }
+    if(MH_CreateHook(exe+kCineCameraMethodRva,reinterpret_cast<void*>(&HookCineCameraView),
+        reinterpret_cast<void**>(&g_originalCineCameraView))!=MH_OK||
+       MH_EnableHook(exe+kCineCameraMethodRva)!=MH_OK){
+        Log(L"Cinematic FOV hook unavailable: installation failed.");return;
+    }
+    g_cineCameraHookReady=true;
+    Log(L"Cinematic FOV hook ready: projection only, after native lens evaluation, active local view target required.");
 }
 
 void ResetBuffers(){
@@ -798,10 +797,10 @@ void DrawMenu(){
     layout::StyleScope style;
     ImGui::SetNextWindowSize(ImVec2(720,555),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(520,370),ImVec2(1300,1020));
-    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.9B HUB REENTRY TEST",
+    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.9C NATIVE SHOP + CAMERA TEST",
         &open,ImGuiWindowFlags_NoCollapse)){
         ImGui::TextColored(ImVec4(.52f,.83f,1.f,1.f),"CRISOL ENHANCED PC MOD");
-        ImGui::SameLine();ImGui::TextDisabled("V0.9B | HUB REENTRY TEST");
+        ImGui::SameLine();ImGui::TextDisabled("V0.9C | NATIVE SHOP + CAMERA");
         ImGui::Separator();ImGui::Spacing();
         ImGui::SetNextItemOpen(true,ImGuiCond_Once);
         if(layout::Group("Camera / Gameplay ownership")){
@@ -822,7 +821,13 @@ void DrawMenu(){
                 g_autoCamera=automatic;SaveSettings();
                 g_autoCandidate=0;g_autoCandidateFrames=0;
             }
-            ImGui::TextDisabled("Captures a stable, first-person camera after loading; native zoom/cinematics keep priority.");
+            ImGui::TextDisabled("Waits for the normal gameplay projection after loading; manual capture remains available.");
+            bool keep=g_keepCinematicFov.load();
+            if(ImGui::Checkbox("Keep mod FOV during cinematics",&keep)){
+                g_keepCinematicFov=keep;SaveSettings();
+            }
+            ImGui::TextDisabled("Keeps your projection on the active cinematic camera; camera motion stays controlled by the game.");
+            ImGui::Text("Cinematic frames with mod FOV: %u",g_cinematicFovFrames.load());
             ImGui::Text("Auto captures: %u | transitions: %u",
                 g_autoCameraCaptures.load(),g_autoCameraReleases.load());
             ImGui::TextWrapped("Manual recapture remains available if the game camera is not recognized.");
@@ -876,7 +881,7 @@ void DrawMenu(){
             if(ImGui::Checkbox("World FOV override",&world)){
                 g_worldEnabled=world;SaveSettings();
             }
-            ImGui::TextDisabled("World view only. Original FOV wins during zoom, scope or camera changes.");
+            ImGui::TextDisabled("Native aim/scope zoom keeps priority. Active cinematics can retain your FOV.");
             if(world){
                 float value=float(g_worldFov.load());
                 if(layout::NumberRow("World FOV","WorldFOV",&value,75.f,130.f,90.f,
@@ -905,27 +910,9 @@ void DrawMenu(){
             }
         }
         ImGui::SetNextItemOpen(true,ImGuiCond_Once);
-        if(layout::Group("Fair / Revisit completed chapters (TEST)")){
-            bool reentry=crtoi::hub::Enabled();
-            if(ImGui::Checkbox("Allow revisiting completed chapters",&reentry)){
-                crtoi::hub::SetEnabled(reentry);SaveSettings();
-                Log(reentry?L"Hub reentry requested ON. Reload the hub save to apply.":
-                    L"Hub reentry requested OFF. Reload the hub save to apply.");
-            }
-            ImGui::TextWrapped("Enable before loading the Fair, or reload your hub save. Uses existing chapter doors without resetting chapter completion.");
-            ImGui::TextWrapped("Test one completed chapter and its return to the Fair before trying another. Chapter 3 keeps the game's normal access rule.");
-            ImGui::Text("Gate controls: %s",crtoi::hub::Ready()?"ready":"unavailable for this game build");
-            const unsigned seen=crtoi::hub::SeenChapters();
-            ImGui::Text("Hub entrances observed: %s %s %s",(seen&1)?"1":"-",(seen&2)?"2":"-",(seen&4)?"3":"-");
-            const unsigned returns=crtoi::hub::SeenReturns();
-            ImGui::Text("Return doors observed: %s %s",(returns&1)?"1":"-",(returns&2)?"2":"-");
-            ImGui::Text("Permissions allowed: %u | unlock requests: %u",crtoi::hub::PermissionChanges(),crtoi::hub::LockChanges());
-            if(crtoi::hub::RejectedSchemas())ImGui::TextDisabled("Skipped unrecognized door data: %u",crtoi::hub::RejectedSchemas());
-        }
-        ImGui::SetNextItemOpen(true,ImGuiCond_Once);
         if(layout::Group("CheatShop (SML external mod)")){
             ImGui::TextWrapped("Launch SML's 'cheatshop' command with one key press. Press again to close its shop.");
-            ImGui::TextDisabled("Requires SML. Start with its console closed; the console may flash briefly.");
+            ImGui::TextDisabled("Requires SML. Uses the game's command path without typing into the console.");
             if(ImGui::Button("Open / close CheatShop")){
                 g_menuOpen=false;
                 open=false;
@@ -945,11 +932,10 @@ void DrawMenu(){
                 g_cheatShopVK=VK_F1;g_captureHotkey=0;SaveSettings();
             }
             ImGui::Spacing();
-            ImGui::TextDisabled("If SML uses a custom console key, set SMLConsoleVirtualKey in INI.");
-            ImGui::Text("Console opening key: %s",g_smlConsoleVK.load()?"INI VK override":
-                SMLLaunchConsoleVK()?"SML launch -consolekey=F-key":"` / ~ (Tilde)");
-            ImGui::Text("Sequences sent: %u / requests: %u",
-                g_cheatShopSequences.load(),g_cheatShopAttempts.load());
+            ImGui::Text("Command path: %s",crtoi::nativebridge::ConsoleReady()?"ready":"unavailable for this game build");
+            ImGui::Text("Requests: %u | commands returned: %u | cancelled: %u",crtoi::nativebridge::Requests(),
+                crtoi::nativebridge::Dispatches(),crtoi::nativebridge::Cancellations());
+            if(crtoi::nativebridge::ShopPending())ImGui::TextDisabled("Waiting for the game to handle your request...");
         }
         ImGui::SetNextItemOpen(true,ImGuiCond_Once);
         if(layout::Group("Startup / Skip Intro")){
@@ -1249,7 +1235,8 @@ extern "C" __declspec(dllexport) void WINAPI CRToi_Initialize() {
         } else {
             InstallIntroVideoHooks();
             InstallCameraHook();
-            crtoi::hub::Install(&Log);
+            crtoi::nativebridge::Initialize(&Log);
+            InstallCineCameraHook();
         }
     });
 }
