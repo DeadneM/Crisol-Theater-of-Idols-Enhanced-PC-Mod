@@ -24,6 +24,8 @@ std::atomic<HWND> requestedWindow{nullptr};
 std::atomic_uint requests{0},dispatches{0},cancellations{0};
 using WorldTickFn=void(__fastcall*)(void*,int,float);
 WorldTickFn originalTick=nullptr;
+thread_local void* tickingWorld=nullptr;
+thread_local bool tickingPlayable=false;
 bool Range(const void* ptr,size_t size,bool write=false) {
     if(!ptr||!size)return false;
     MEMORY_BASIC_INFORMATION mbi{};
@@ -243,7 +245,10 @@ void Service(void* world) {
 void __fastcall HookWorldTick(void* world,int tickType,float delta) {
     thread_local bool busy=false;
     const bool outer=!busy;busy=true;
+    void* previousWorld=tickingWorld;const bool previousPlayable=tickingPlayable;
+    tickingWorld=world;tickingPlayable=tickType!=2&&delta>0.f;
     if(originalTick)originalTick(world,tickType,delta);
+    tickingWorld=previousWorld;tickingPlayable=previousPlayable;
     if(outer&&consoleSupported.load())Service(world);
     if(outer)busy=false;
 }
@@ -292,6 +297,27 @@ bool ShopPending() {return pendingAt.load()!=0;}
 unsigned Requests() {return requests.load();}
 unsigned Dispatches() {return dispatches.load();}
 unsigned Cancellations() {return cancellations.load();}
+bool PlayerCameraControllable(void* owner) {
+    if(!supported.load()||!OnGameThread()||!tickingWorld||!tickingPlayable)return false;
+    void* controller=nullptr;void* cls=nullptr;bool cinematic=true;
+    if(!CameraController(owner,controller)||!ControllerCinematic(controller,cinematic)||cinematic||
+       !Read(controller,0x10,cls))return false;
+    // Reflected properties only: unknown schemas leave the game's FOV untouched.
+    thread_local FieldCache moveCache,lookCache,cursorCache;
+    Property move,look,cursor;uint8_t moveValue=0,lookValue=0,cursorValue=0;
+    if(!CachedProperty(moveCache,cls,"IgnoreMoveInput","ByteProperty",1,move)||
+       !CachedProperty(lookCache,cls,"IgnoreLookInput","ByteProperty",1,look)||
+       !CachedProperty(cursorCache,cls,"bShowMouseCursor","BoolProperty",1,cursor)||
+       !Read(controller,size_t(move.offset),moveValue)||
+       !Read(controller,size_t(look.offset),lookValue)||
+       !Read(controller,size_t(cursor.offset)+cursor.byteOffset,cursorValue)||
+       moveValue||lookValue||(cursorValue&cursor.fieldMask))return false;
+    void* table=nullptr;void* target=nullptr;
+    if(!Read(controller,0,table)||!Read(table,0x7A8,target))return false;
+    const uintptr_t address=reinterpret_cast<uintptr_t>(target);
+    if(address<image+0x1000||address>=image+0x7490000||!Range(target,16))return false;
+    return reinterpret_cast<ViewTargetFn>(target)(controller)==owner;
+}
 bool ActiveCinematicCamera(void* owner,bool dedicatedCineComponent,bool& cinematic) {
     if(!supported.load()||!OnGameThread())return false;
     void* controller=nullptr;

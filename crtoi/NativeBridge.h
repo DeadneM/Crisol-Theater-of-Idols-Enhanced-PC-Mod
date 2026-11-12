@@ -11,5 +11,6 @@ bool ShopPending();
 unsigned Requests();
 unsigned Dispatches();
 unsigned Cancellations();
+bool PlayerCameraControllable(void* cameraOwner);
 bool ActiveCinematicCamera(void* cameraOwner,bool dedicatedCineComponent,bool& cinematic);
 }

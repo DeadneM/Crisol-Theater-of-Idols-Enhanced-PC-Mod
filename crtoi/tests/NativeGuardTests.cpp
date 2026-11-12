@@ -8,6 +8,7 @@ int main() {
     // contexts must be refused before any game object access or native call.
     Initialize(&Log);
     if(Ready()||ConsoleReady()||!logged)return 1;
+    if(PlayerCameraControllable(reinterpret_cast<void*>(1)))return 5;
     bool cinematic=false;
     if(ActiveCinematicCamera(reinterpret_cast<void*>(1),false,cinematic))return 2;
     if(ActiveCinematicCamera(reinterpret_cast<void*>(1),true,cinematic))return 2;

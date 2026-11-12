@@ -45,7 +45,7 @@ jobs:
             "dev/v0.7-freecam-teleport" { "CRToi_Enhanced_V0.7A_FREECAM_TELEPORT_TEST_x64.zip" }
             "dev/v0.8-autocamera-skip-intro" { "CRToi_Enhanced_V0.8A_AUTOFOV_SKIP_INTRO_TEST_x64.zip" }
             "dev/v0.8b-cheatshop-input" { "CRToi_Enhanced_V0.8B_CHEATSHOP_INPUT_TEST_x64.zip" }
-            "dev/v0.9c-native-console-camera" { "CRToi_Enhanced_V0.9D_NATIVE_SHOP_CAMERA_TEST_x64.zip" }
+            "dev/v0.9c-native-console-camera" { "CRToi_Enhanced_V0.9E_NATIVE_SHOP_CAMERA_TEST_x64.zip" }
             default { throw "Unknown branch: $env:GITHUB_REF_NAME" }
           }
           if (Test-Path crtoi/package) { Remove-Item crtoi/package -Recurse -Force }
@@ -74,7 +74,7 @@ jobs:
       - name: Upload build output (requires review before release)
         uses: actions/upload-artifact@v4
         with:
-          name: Crisol-${{ github.ref_name == 'dev/v0.9c-native-console-camera' && 'V0.9D-Native-Shop-Camera' || github.ref_name == 'dev/v0.8b-cheatshop-input' && 'V0.8B-CheatShop-Input' || 'V0.8A-AutoFOV-SkipIntro' }}-TEST-x64
+          name: Crisol-${{ github.ref_name == 'dev/v0.9c-native-console-camera' && 'V0.9E-Native-Shop-Camera' || github.ref_name == 'dev/v0.8b-cheatshop-input' && 'V0.8B-CheatShop-Input' || 'V0.8A-AutoFOV-SkipIntro' }}-TEST-x64
           path: ${{ env.ZIP_NAME }}
           retention-days: 90
           if-no-files-found: error

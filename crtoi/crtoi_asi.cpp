@@ -51,8 +51,13 @@ std::atomic_uintptr_t g_flyOwner{0};
 double g_flyPosition[3]{},g_flyCameraOffset[3]{},g_flyStartOwner[3]{};
 ULONGLONG g_flyLastTick=0;
 
-std::atomic_bool g_keepCinematicFov{true},g_wasPlayerCinematic{false};
-std::atomic_uint g_cinematicFovFrames{0};
+std::atomic_bool g_wasPlayerCinematic{false};
+// Camera-hook thread only; reset whenever native control takes priority.
+uintptr_t g_blendCamera=0;
+uint64_t g_blendTick=0;
+float g_blendWorld=0.f,g_blendFps=0.f;
+void ResetFovBlend(){g_blendCamera=0;g_blendTick=0;}
+
 
 std::atomic_int g_worldFov{90},g_fpsFov{85};
 std::atomic_bool g_worldEnabled{false},g_fpsEnabled{false};
@@ -135,7 +140,6 @@ void SaveSettings(){
     WritePrivateProfileStringW(L"Camera",L"WorldFOVEnabled",g_worldEnabled.load()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"FPSFOVEnabled",g_fpsEnabled.load()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"AutoCaptureGameplay",g_autoCamera.load()?L"1":L"0",g_ini.c_str());
-    WritePrivateProfileStringW(L"Camera",L"KeepFOVInPlayerCinematics",g_keepCinematicFov.load()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Hub",L"AllowCompletedChapterReentry",crtoi::hub::Enabled()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Startup",L"SkipIntroVideos",g_skipStartupVideos.load()?L"1":L"0",g_ini.c_str());
     swprintf_s(v,L"%d",g_fpsFov.load());WritePrivateProfileStringW(L"Camera",L"FPSFOV",v,g_ini.c_str());
@@ -159,11 +163,10 @@ void InitPathAndSettings(){
     g_worldEnabled=GetPrivateProfileIntW(L"Camera",L"WorldFOVEnabled",0,g_ini.c_str())!=0;
     g_fpsEnabled=GetPrivateProfileIntW(L"Camera",L"FPSFOVEnabled",0,g_ini.c_str())!=0;
     g_autoCamera=GetPrivateProfileIntW(L"Camera",L"AutoCaptureGameplay",1,g_ini.c_str())!=0;
-    g_keepCinematicFov=GetPrivateProfileIntW(L"Camera",L"KeepFOVInPlayerCinematics",1,g_ini.c_str())!=0;
     crtoi::hub::SetEnabled(GetPrivateProfileIntW(L"Hub",L"AllowCompletedChapterReentry",1,g_ini.c_str())!=0);
     g_skipStartupVideos=GetPrivateProfileIntW(L"Startup",L"SkipIntroVideos",1,g_ini.c_str())!=0;
     g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",85,g_ini.c_str())),60,130);
-    Log(L"CRToi V0.9D TEST: native CheatShop dispatch, player-cinematic FOV retention and safer camera acquisition. Original V0.9B hub reentry restored at user request.");
+    Log(L"CRToi V0.9E TEST: player-control-only FOV with smooth gameplay recovery; native menus/cinematics. Original V0.9B hub reentry restored at user request.");
 }
 // Suppress ONLY the three documented startup MP4 files in Crisol's
 // Content/Movies directory while the game is initializing. This avoids
@@ -563,7 +566,7 @@ void AutoCaptureCamera(void* camera,uint8_t* view,float world,float fps,bool aim
 }
 
 // Projection-only cinematic handling: native camera motion and timing stay intact.
-bool ApplyCinematicFov(void* camera,uint8_t* view,bool dedicated){
+bool ObserveCinematic(void* camera,bool dedicated){
     void* owner=nullptr;double root[3]{};bool cinematic=false;
     const bool known=GetPlayerRootFromCamera(camera,owner,root)&&
         crtoi::nativebridge::ActiveCinematicCamera(owner,dedicated,cinematic);
@@ -571,22 +574,7 @@ bool ApplyCinematicFov(void* camera,uint8_t* view,bool dedicated){
         if(!g_wasPlayerCinematic.exchange(true))
             Log(L"Active cinematic camera detected. Gameplay baseline acquisition deferred.");
         StopFly(L"Freecam stopped for active cinematic camera.");
-        if(g_keepCinematicFov.load()&&!ScopeInputHeld()){
-            float nativeWorld=0.f,nativeFps=0.f;uint32_t flags=0;
-            std::memcpy(&nativeWorld,view+0x30,4);std::memcpy(&nativeFps,view+0x38,4);
-            std::memcpy(&flags,view+0x68,4);
-            bool changed=false;
-            if(g_worldEnabled.load()&&std::isfinite(nativeWorld)&&nativeWorld>1.f&&nativeWorld<179.f){
-                const float desired=float(std::clamp(g_worldFov.load(),75,130));
-                std::memcpy(view+0x30,&desired,4);std::memcpy(view+0x34,&desired,4);
-                ++g_worldApplied;changed=true;
-            }
-            if(g_fpsEnabled.load()&&(flags&0x02)&&std::isfinite(nativeFps)&&nativeFps>=40.f&&nativeFps<=150.f){
-                const float desired=float(std::clamp(g_fpsFov.load(),60,130));
-                std::memcpy(view+0x38,&desired,4);++g_fpsApplied;changed=true;
-            }
-            if(changed)++g_cinematicFovFrames;
-        }
+        ResetFovBlend();
         return true;
     }
     if(known&&!cinematic&&g_wasPlayerCinematic.exchange(false)){
@@ -617,7 +605,13 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
     std::memcpy(&baseFPS,view+0x38,4);
     if(!std::isfinite(baseWorld)||baseWorld<=1.f||baseWorld>=179.f)return;
     bool aiming=ScopeInputHeld();
-    if(ApplyCinematicFov(camera,view,false))return;
+    if(ObserveCinematic(camera,false))return;
+    void* playerOwner=nullptr;double root[3]{};
+    if(g_menuOpen.load()||!GameplayWindowActive()||
+       !GetPlayerRootFromCamera(camera,playerOwner,root)||
+       !crtoi::nativebridge::PlayerCameraControllable(playerOwner)){
+        ResetFovBlend();return;
+    }
     if((object[0x262]&0x04)==0||(flags&0x02)==0||!std::isfinite(baseFPS)||baseWorld<55.f||baseWorld>125.f||
        baseFPS<40.f||baseFPS>150.f)return;
     ++g_firstPersonCandidates;
@@ -629,7 +623,7 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
     }else{
         AutoCaptureCamera(camera,view,baseWorld,baseFPS,aiming);
     }
-    if(g_playerCamera.load()!=ptr)return; // camera swap (cinematics) => vanilla
+    if(g_playerCamera.load()!=ptr){ResetFovBlend();return;} // camera swap => vanilla
     g_playerLastSeen=GetTickCount64();
     g_nativeWorld.store(baseWorld);
     g_nativeFps.store(baseFPS);
@@ -639,18 +633,28 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
        std::abs(baseWorld-g_baselineWorld.load())>1.0f ||
        std::abs(baseFPS-g_baselineFps.load())>1.0f) {
         if(g_flyActive.load())StopFly(L"Freecam disabled by zoom, ADS or native FOV transition.");
+        ResetFovBlend();
         ++g_scopeBypass;
         return;
     }
     HandleFlyCamera(camera,view,aiming);
+    const uint64_t now=GetTickCount64();
+    if(g_blendCamera!=ptr||!g_blendTick||now-g_blendTick>250){
+        g_blendCamera=ptr;g_blendWorld=baseWorld;g_blendFps=baseFPS;g_blendTick=now;
+    }
+    // Frame-rate independent exponential easing; no writes outside gameplay.
+    const float seconds=float(now-g_blendTick)*0.001f;g_blendTick=now;
+    const float alpha=1.f-std::exp(-seconds/0.15f);
+    g_blendWorld+=(float(std::clamp(g_worldFov.load(),75,130))-g_blendWorld)*alpha;
+    g_blendFps+=(float(std::clamp(g_fpsFov.load(),60,130))-g_blendFps)*alpha;
     if(g_worldEnabled.load()){
-        const float value=float(std::clamp(g_worldFov.load(),75,130));
+        const float value=g_blendWorld;
         std::memcpy(view+0x30,&value,4);
         std::memcpy(view+0x34,&value,4);
         ++g_worldApplied;
     }
     if(g_fpsEnabled.load()){
-        const float value=float(std::clamp(g_fpsFov.load(),60,130));
+        const float value=g_blendFps;
         std::memcpy(view+0x38,&value,4);
         ++g_fpsApplied;
     }
@@ -695,7 +699,7 @@ void __fastcall HookCineCameraView(void* camera,float delta,void* out){
     if(!camera||!out||!g_cineCameraHookReady.load())return;
     const uintptr_t image=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     if(*reinterpret_cast<const uintptr_t*>(camera)!=image+kCineCameraVtableRva)return;
-    ApplyCinematicFov(camera,static_cast<uint8_t*>(out),true);
+    ObserveCinematic(camera,true);
 }
 void InstallCineCameraHook(){
     if(!crtoi::nativebridge::Ready())return;
@@ -800,10 +804,10 @@ void DrawMenu(){
     layout::StyleScope style;
     ImGui::SetNextWindowSize(ImVec2(720,555),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(520,370),ImVec2(1300,1020));
-    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.9D NATIVE SHOP + CAMERA TEST",
+    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.9E NATIVE SHOP + CAMERA TEST",
         &open,ImGuiWindowFlags_NoCollapse)){
         ImGui::TextColored(ImVec4(.52f,.83f,1.f,1.f),"CRISOL ENHANCED PC MOD");
-        ImGui::SameLine();ImGui::TextDisabled("V0.9D | NATIVE SHOP + CAMERA");
+        ImGui::SameLine();ImGui::TextDisabled("V0.9E | NATIVE SHOP + CAMERA");
         ImGui::Separator();ImGui::Spacing();
         ImGui::SetNextItemOpen(true,ImGuiCond_Once);
         if(layout::Group("Camera / Gameplay ownership")){
@@ -825,12 +829,7 @@ void DrawMenu(){
                 g_autoCandidate=0;g_autoCandidateFrames=0;
             }
             ImGui::TextDisabled("Waits for the normal gameplay projection after loading; manual capture remains available.");
-            bool keep=g_keepCinematicFov.load();
-            if(ImGui::Checkbox("Keep mod FOV during cinematics",&keep)){
-                g_keepCinematicFov=keep;SaveSettings();
-            }
-            ImGui::TextDisabled("Keeps your projection on the active cinematic camera; camera motion stays controlled by the game.");
-            ImGui::Text("Cinematic frames with mod FOV: %u",g_cinematicFovFrames.load());
+            ImGui::TextDisabled("Player control only. Menus/cinematics keep native FOV; gameplay resumes smoothly.");
             ImGui::Text("Auto captures: %u | transitions: %u",
                 g_autoCameraCaptures.load(),g_autoCameraReleases.load());
             ImGui::TextWrapped("Manual recapture remains available if the game camera is not recognized.");
@@ -884,7 +883,7 @@ void DrawMenu(){
             if(ImGui::Checkbox("World FOV override",&world)){
                 g_worldEnabled=world;SaveSettings();
             }
-            ImGui::TextDisabled("Native aim/scope zoom keeps priority. Active cinematics can retain your FOV.");
+            ImGui::TextDisabled("Native aim/scope zoom keeps priority. Gameplay FOV returns smoothly.");
             if(world){
                 float value=float(g_worldFov.load());
                 if(layout::NumberRow("World FOV","WorldFOV",&value,75.f,130.f,90.f,
