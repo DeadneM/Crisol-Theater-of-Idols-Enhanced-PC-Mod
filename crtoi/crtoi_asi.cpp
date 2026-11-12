@@ -172,7 +172,7 @@ void InitPathAndSettings(){
     crtoi::hub::SetEnabled(GetPrivateProfileIntW(L"Hub",L"AllowCompletedChapterReentry",1,g_ini.c_str())!=0);
     g_skipStartupVideos=GetPrivateProfileIntW(L"Startup",L"SkipIntroVideos",1,g_ini.c_str())!=0;
     g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",105,g_ini.c_str())),60,130);
-    Log(L"CRToi V0.9I TEST: Independent aiming/sniper FOV (80 defaults); smooth absolute transitions; native shop Close path. Original V0.9B hub reentry restored at user request.");
+    Log(L"CRToi V0.10A TEST: F4 native quick save with verified previous-autosave backup; V0.9I behavior retained. Original V0.9B hub reentry restored at user request.");
 }
 // Suppress ONLY the three documented startup MP4 files in Crisol's
 // Content/Movies directory while the game is initializing. This avoids
@@ -643,6 +643,7 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
         (firstPerson&&std::abs(baseFPS-g_baselineFps.load())>1.f))){
         ResetFovBlend();++g_scopeBypass;return;
     }
+    if(!g_flyActive.load()&&ownerActor)crtoi::nativebridge::MarkGameplayForSave(ownerActor);
     HandleFlyCamera(camera,view,aiming);
     if(g_blendCamera!=ptr||!g_blendTick||now-g_blendTick>250){
         g_blendCamera=ptr;g_blendWorld=baseWorld;g_blendFps=firstPerson?baseFPS:g_baselineFps.load();g_blendTick=now;
@@ -731,6 +732,7 @@ LRESULT CALLBACK WindowProc(HWND wnd,UINT msg,WPARAM wp,LPARAM lp){
         if(!(lp & (1LL<<30))){
             const int capture=g_captureHotkey.exchange(0);
             if(capture) {
+                if(wp==VK_F4){g_captureHotkey=capture;Log(L"F4 is reserved for quick save; choose another key.");return 0;}
                 if(wp!=VK_ESCAPE) {
                     if(capture==1){
                         if(int(wp)!=g_cheatShopVK.load()&&int(wp)!=g_flyVK.load()&&
@@ -748,6 +750,14 @@ LRESULT CALLBACK WindowProc(HWND wnd,UINT msg,WPARAM wp,LPARAM lp){
                         g_teleportVK=int(wp);
                     SaveSettings();
                     Log(L"Hotkey rebound through native game window.");
+                }
+                return 0;
+            }
+            if(wp==VK_F4){
+                if(g_flyActive.load())Log(L"F4 refused while freecam is active.");
+                else {
+                    g_menuOpen=false;
+                    if(!crtoi::nativebridge::QueueQuickSave(g_gameHwnd))Log(L"F4 quick save unavailable or already queued.");
                 }
                 return 0;
             }
@@ -805,10 +815,10 @@ void DrawMenu(){
     layout::StyleScope style;
     ImGui::SetNextWindowSize(ImVec2(720,555),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(520,370),ImVec2(1300,1020));
-    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.9I NATIVE SHOP + CAMERA TEST",
+    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.10A NATIVE SHOP + CAMERA TEST",
         &open,ImGuiWindowFlags_NoCollapse)){
         ImGui::TextColored(ImVec4(.52f,.83f,1.f,1.f),"CRISOL ENHANCED PC MOD");
-        ImGui::SameLine();ImGui::TextDisabled("V0.9I | NATIVE SHOP + CAMERA");
+        ImGui::SameLine();ImGui::TextDisabled("V0.10A | NATIVE SHOP + CAMERA");
         ImGui::Separator();ImGui::Spacing();
         ImGui::SetNextItemOpen(false,ImGuiCond_Once);
         if(layout::Group("Camera / Gameplay ownership")){
@@ -969,6 +979,16 @@ void DrawMenu(){
             if(crtoi::nativebridge::ShopPending())ImGui::TextDisabled("Waiting for the game to handle your request...");
         }
         ImGui::SetNextItemOpen(false,ImGuiCond_Once);
+        if(layout::Group("Quick save / F4")){
+            ImGui::TextWrapped("F4 requests the game's AutoSave slot. Existing manual slots are not targeted. The previous autosave is copied and verified first.");
+            ImGui::TextWrapped("%s",crtoi::nativebridge::QuickSaveStatus());
+            if(!crtoi::nativebridge::QuickSaveReady())ImGui::TextDisabled("Unavailable for this game build.");
+            else if(ImGui::Button("Quick save now (F4)")){
+                g_menuOpen=false;
+                crtoi::nativebridge::QueueQuickSave(g_gameHwnd);
+            }
+        }
+        ImGui::SetNextItemOpen(false,ImGuiCond_Once);
         if(layout::Group("Startup / Skip Intro")){
             bool skip=g_skipStartupVideos.load();
             if(ImGui::Checkbox("Skip startup logo videos",&skip)){
@@ -1092,6 +1112,17 @@ bool InitUi(IDXGISwapChain* swap){
     Log(L"Overlay V0.2A initialized (in-process DXGI Present). Press Insert.");
     return true;
 }
+void DrawQuickSaveToast(){
+    const uint64_t changed=crtoi::nativebridge::QuickSaveStatusAt();
+    if(!changed||GetTickCount64()-changed>4000)return;
+    const ImGuiViewport* viewport=ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x+viewport->WorkSize.x*.5f,viewport->WorkPos.y+24.f),ImGuiCond_Always,ImVec2(.5f,0.f));
+    ImGui::SetNextWindowBgAlpha(.85f);
+    if(ImGui::Begin("##QuickSaveToast",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_AlwaysAutoResize|
+        ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoInputs|ImGuiWindowFlags_NoFocusOnAppearing))
+        ImGui::TextUnformatted(crtoi::nativebridge::QuickSaveStatus());
+    ImGui::End();
+}
 void Render(IDXGISwapChain* swap){
     if(g_failed||swap!=g_swap.Get())return;
 
@@ -1145,6 +1176,7 @@ void Render(IDXGISwapChain* swap){
     g_charRead.store(read,std::memory_order_relaxed);
     ImGui::NewFrame();
     DrawMenu();
+    DrawQuickSaveToast();
     ImGui::Render();
     ComPtr<ID3D11RenderTargetView> prior;
     ComPtr<ID3D11DepthStencilView> oldDepth;

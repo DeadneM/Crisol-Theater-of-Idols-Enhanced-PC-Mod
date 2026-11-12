@@ -12,11 +12,27 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstddef>
+#include <shlobj.h>
+#include <string>
 
 namespace crtoi::nativebridge {
 namespace {
 Logger logger=nullptr;
 uintptr_t image=0;
+std::atomic_bool quickSupported{false};
+std::atomic_uint64_t quickAt{0},playableAt{0},quickStatusAt{0};
+std::atomic<void*> playableOwner{nullptr};
+std::atomic<HWND> quickWindow{nullptr};
+enum class QuickStatus {Idle,Queued,Unavailable,BackupFailed,Requested,Written,NoWrite,Busy};
+std::atomic<QuickStatus> quickStatus{QuickStatus::Idle};
+std::wstring autoSavePath;
+WIN32_FILE_ATTRIBUTE_DATA beforeSave{};
+uint64_t checkingSaveAt=0,lastQuickAttempt=0;
+void SetQuickStatus(QuickStatus value,const wchar_t* message){
+    quickStatus=value;quickStatusAt=GetTickCount64();
+    if(logger&&message)logger(message);
+}
+
 constexpr uintptr_t kNamePool=0x96E8600;
 std::atomic_bool supported{false},consoleSupported{false};
 std::atomic_uint64_t pendingAt{0};
@@ -317,6 +333,78 @@ void Service(void* world) {
         if(logger)logger(L"CheatShop: controller or native dispatch checks failed. No keyboard fallback used.");
     }
 }
+bool SameCopy(const std::wstring& a,const std::wstring& b) {
+    HANDLE first=CreateFileW(a.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(first==INVALID_HANDLE_VALUE)return false;
+    HANDLE second=CreateFileW(b.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(second==INVALID_HANDLE_VALUE){CloseHandle(first);return false;}
+    std::array<uint8_t,65536> x{},y{};bool ok=true;DWORD nx=0,ny=0;
+    do {
+        ok=ReadFile(first,x.data(),DWORD(x.size()),&nx,nullptr)&&
+           ReadFile(second,y.data(),DWORD(y.size()),&ny,nullptr)&&nx==ny&&std::memcmp(x.data(),y.data(),nx)==0;
+    }while(ok&&nx);
+    CloseHandle(first);CloseHandle(second);return ok;
+}
+bool BackupAutoSave() {
+    PWSTR local=nullptr;
+    if(FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData,0,nullptr,&local)))return false;
+    std::wstring saved=std::wstring(local)+L"\\CRToiPrototype\\Saved";CoTaskMemFree(local);
+    autoSavePath=saved+L"\\SaveGames\\AutoSave.sav";
+    beforeSave={};
+    if(!GetFileAttributesExW(autoSavePath.c_str(),GetFileExInfoStandard,&beforeSave))
+        return GetLastError()==ERROR_FILE_NOT_FOUND;
+    const std::wstring root=saved+L"\\CRToiEnhancedBackups";
+    if(!CreateDirectoryW(root.c_str(),nullptr)&&GetLastError()!=ERROR_ALREADY_EXISTS)return false;
+    SYSTEMTIME time{};GetLocalTime(&time);wchar_t name[100]{};
+    swprintf_s(name,L"\\AutoSave_before_F4_%04u%02u%02u_%02u%02u%02u_%03u.sav",
+        time.wYear,time.wMonth,time.wDay,time.wHour,time.wMinute,time.wSecond,time.wMilliseconds);
+    const std::wstring destination=root+name;
+    if(!CopyFileW(autoSavePath.c_str(),destination.c_str(),TRUE)||!SameCopy(autoSavePath,destination))return false;
+    if(logger)logger((L"F4 previous autosave copied and byte-verified: "+destination).c_str());
+    return true;
+}
+void ServiceQuickSave(void* world) {
+    const uint64_t now=GetTickCount64();
+    if(checkingSaveAt) {
+        WIN32_FILE_ATTRIBUTE_DATA after{};
+        if(GetFileAttributesExW(autoSavePath.c_str(),GetFileExInfoStandard,&after)&&
+           (after.nFileSizeHigh||after.nFileSizeLow>64)&&
+           (CompareFileTime(&after.ftLastWriteTime,&beforeSave.ftLastWriteTime)!=0||
+            after.nFileSizeLow!=beforeSave.nFileSizeLow||after.nFileSizeHigh!=beforeSave.nFileSizeHigh)) {
+            checkingSaveAt=0;SetQuickStatus(QuickStatus::Written,L"F4: native AutoSave file updated. Reload validation is still required.");
+        }else if(now-checkingSaveAt>10000){checkingSaveAt=0;SetQuickStatus(QuickStatus::NoWrite,L"F4: no AutoSave file update detected; game may have refused the native request.");}
+    }
+    uint64_t requested=quickAt.load();if(!requested)return;
+    if(!quickAt.compare_exchange_strong(requested,0))return;
+    if(checkingSaveAt||(lastQuickAttempt&&now-lastQuickAttempt<3000)){
+        SetQuickStatus(QuickStatus::Busy,L"F4: save already pending or cooldown active.");return;
+    }
+    void* owner=playableOwner.load();void* controller=nullptr;
+    bool cinematic=true,cursor=true;
+    if(now-requested>1500||now-playableAt.load()>500||!LiveObject(owner)||
+       GetForegroundWindow()!=quickWindow.load()||!LiveObject(world)||!OnGameThread()){
+        SetQuickStatus(QuickStatus::Unavailable,L"F4 refused: no recent active captured gameplay camera.");return;
+    }
+    controller=reinterpret_cast<FirstControllerFn>(image+0x3FA9D70)(world);
+    if(!LiveObject(controller)||!ControllerCursor(controller,cursor)||cursor||
+       !ControllerCinematic(controller,cinematic)||cinematic){
+        SetQuickStatus(QuickStatus::Unavailable,L"F4 refused: controller unavailable, menu or cinematic active.");return;
+    }
+    using ManagerFn=void*(__fastcall*)(const void*);
+    using AutoSaveFn=void(__fastcall*)(void*);
+    void* manager=reinterpret_cast<ManagerFn>(image+0x4DD2FF0)(world);
+    void* context=nullptr;
+    if(!LiveObject(manager)||!Read(manager,0x28,context)||!LiveObject(context)){
+        SetQuickStatus(QuickStatus::Unavailable,L"F4 refused: native save manager unavailable.");return;
+    }
+    if(!BackupAutoSave()){
+        SetQuickStatus(QuickStatus::BackupFailed,L"F4 cancelled: previous autosave backup could not be verified. No native save called.");return;
+    }
+    lastQuickAttempt=now;
+    SetQuickStatus(QuickStatus::Requested,L"F4: invoking the native AutoSave path (slot 0); manual slots are not targeted.");
+    reinterpret_cast<AutoSaveFn>(image+0x4D87040)(manager);
+    checkingSaveAt=GetTickCount64();
+}
 void __fastcall HookWorldTick(void* world,int tickType,float delta) {
     thread_local bool busy=false;
     const bool outer=!busy;busy=true;
@@ -324,6 +412,7 @@ void __fastcall HookWorldTick(void* world,int tickType,float delta) {
     if(originalTick)originalTick(world,tickType,delta);
 
     if(outer&&consoleSupported.load())Service(world);
+    if(outer&&quickSupported.load()&&OnGameThread())ServiceQuickSave(world);
     if(outer)busy=false;
 }
 }
@@ -372,6 +461,16 @@ void Initialize(Logger log) {
        std::memcmp(reinterpret_cast<void*>(image+0x327935A),containsCall,sizeof(containsCall))==0&&
        MH_CreateHook(reinterpret_cast<void*>(image+0x147D520),reinterpret_cast<void*>(&HookEvent),reinterpret_cast<void**>(&originalEvent))==MH_OK&&
        MH_EnableHook(reinterpret_cast<void*>(image+0x147D520))==MH_OK)closeSupported=true;
+    constexpr uint8_t saveGetter[]={0x48,0x89,0x5c,0x24,0x08,0x57,0x48,0x83,0xec,0x20};
+    constexpr uint8_t autoSave[]={0x48,0x89,0x5c,0x24,0x08,0x57,0x48,0x83,0xec,0x20,0x48,0x8b,0x59,0x28};
+    constexpr uint8_t slotZero[]={0x33,0xd2,0x48,0x8b,0xcf,0xe8,0x32,0x9e,0x02,0x00};
+    constexpr uint8_t saveBody[]={0x40,0x55,0x41,0x56,0x41,0x57};
+    constexpr uint8_t wrapperJump[]={0xe9,0xb6,0x9e,0x0b,0x00};
+    quickSupported=std::memcmp(reinterpret_cast<void*>(image+0x4DD2FF0),saveGetter,sizeof(saveGetter))==0&&
+        std::memcmp(reinterpret_cast<void*>(image+0x4D87040),autoSave,sizeof(autoSave))==0&&
+        std::memcmp(reinterpret_cast<void*>(image+0x4D870C4),slotZero,sizeof(slotZero))==0&&
+        std::memcmp(reinterpret_cast<void*>(image+0x4DB0F00),saveBody,sizeof(saveBody))==0&&
+        std::memcmp(reinterpret_cast<void*>(image+0x4CCD185),wrapperJump,sizeof(wrapperJump))==0;
     consoleSupported=true;
     if(logger)logger(L"V0.9C native console queue ready. Explicit F1/menu requests only; game-thread gate; no input simulation or door/progression hook.");
 }
@@ -386,6 +485,28 @@ bool QueueShop(HWND window) {
     if(!pendingAt.compare_exchange_strong(expected,GetTickCount64()))return false;
     ++requests;return true;
 }
+bool QuickSaveReady(){return quickSupported.load();}
+void MarkGameplayForSave(void* owner){playableOwner=owner;playableAt=GetTickCount64();}
+bool QueueQuickSave(HWND window) {
+    if(!quickSupported.load()||!window||GetForegroundWindow()!=window)return false;
+    DWORD process=0;GetWindowThreadProcessId(window,&process);if(process!=GetCurrentProcessId())return false;
+    uint64_t expected=0;quickWindow=window;
+    if(!quickAt.compare_exchange_strong(expected,GetTickCount64()))return false;
+    SetQuickStatus(QuickStatus::Queued,L"F4: explicit quick-save request queued.");return true;
+}
+const char* QuickSaveStatus(){
+    switch(quickStatus.load()){
+    case QuickStatus::Queued:return "Quick save queued...";
+    case QuickStatus::Unavailable:return "Quick save unavailable here (gameplay required).";
+    case QuickStatus::BackupFailed:return "Quick save cancelled: backup failed.";
+    case QuickStatus::Requested:return "Saving through the game's autosave...";
+    case QuickStatus::Written:return "Autosave file updated.";
+    case QuickStatus::NoWrite:return "No autosave update detected.";
+    case QuickStatus::Busy:return "Save already pending; please wait.";
+    default:return "F4 saves to the game's AutoSave slot.";
+    }
+}
+ULONGLONG QuickSaveStatusAt(){return quickStatusAt.load();}
 bool ShopPending() {return pendingAt.load()!=0;}
 unsigned Requests() {return requests.load();}
 unsigned Dispatches() {return dispatches.load();}

@@ -2,6 +2,10 @@
 
 Independent x64 ASI mod for **Crisol: Theater of Idols**. Built around an in-game Dear ImGui menu and a DXGI ASI loader.
 
+## V0.10A F4 native quick save (experimental)
+
+Base V0.9I confirmed by the user. New `dev/v0.10-quicksave-f4` branch adds F4 to the game's AutoSave path, with a byte-verified backup of the preceding AutoSave before invoking the native writer. Manual slots are not targeted. A short notification reports whether the AutoSave file changed; restore correctness still requires a reload test. Backup files are under the game's Saved/CRToiEnhancedBackups directory. Existing FOV, gates, shortcuts, personal INI and collapsed menu behavior are preserved. No F5/quick-load added.
+
 ## V0.9I personal defaults / collapsed menu
 
 Uses the user's current defaults: world 120, weapon 105, aim 105, sniper 30, FOV enabled, HOME menu. Existing INI remains authoritative. All eight menu groups start collapsed, then remain user-expandable. F1 requests during the existing debounce wait rather than being discarded. Base V0.9H FOV and native shop closure retained; doors unchanged.
