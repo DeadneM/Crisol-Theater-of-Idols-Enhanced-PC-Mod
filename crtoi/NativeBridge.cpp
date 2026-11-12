@@ -24,6 +24,11 @@ std::atomic<HWND> requestedWindow{nullptr};
 std::atomic_uint requests{0},dispatches{0},cancellations{0};
 using WorldTickFn=void(__fastcall*)(void*,int,float);
 WorldTickFn originalTick=nullptr;
+using EventFn=void(__fastcall*)(void*,void*,void*);
+EventFn originalEvent=nullptr;
+std::atomic_bool closeSupported{false},weaponSupported{false};
+void* shopWidget=nullptr;void* shopGraph=nullptr;
+
 std::atomic<void*> lastTickWorld{nullptr};
 std::atomic_uint64_t lastTickAt{0};
 std::atomic_bool lastTickPlayable{false};
@@ -183,6 +188,54 @@ using WorldFromContextFn=void*(__fastcall*)(void*,const void*,int);
 using ViewTargetFn=void*(__fastcall*)(void*);
 using ConsoleFn=FString*(__fastcall*)(void*,FString*,const FString*,bool);
 using FreeFn=void(__fastcall*)(void*);
+bool ValidShopGraph(void* widget,void* function) {
+    if(!LiveObject(widget)||!DerivedFrom(widget,"ShopCheater_WBP_C")||!LiveObject(function)||
+       !Named(function,0x18,"ExecuteUbergraph_ShopCheater_WBP"))return false;
+    uint16_t params=0;void* script=nullptr;int32_t length=0;uint8_t entry=0,remove=0;
+    Property parameter;
+    return Read(function,0xB6,params)&&params==4&&
+        FindProperty(function,"EntryPoint","IntProperty",4,parameter,false)&&parameter.offset==0&&
+        Read(function,0x60,script)&&Read(function,0x68,length)&&length==1292&&
+        Read(script,10,entry)&&entry==0x5f&&Read(script,0x9f,remove)&&remove==0x1b;
+}
+void __fastcall HookEvent(void* object,void* function,void* params) {
+    // Construct's script is EX_LocalFinalFunction followed by the exact graph
+    // pointer. Observe that existing pointer instead of searching global objects.
+    if(closeSupported.load()&&OnGameThread()&&Named(function,0x18,"Construct")&&
+       LiveObject(object)&&DerivedFrom(object,"ShopCheater_WBP_C")) {
+        void* script=nullptr;void* graph=nullptr;int32_t length=0;uint8_t opcode=0;
+        if(Read(function,0x60,script)&&Read(function,0x68,length)&&length==18&&
+           Read(script,0,opcode)&&opcode==0x46&&Read(script,1,graph)&&ValidShopGraph(object,graph)) {
+            shopWidget=object;shopGraph=graph;
+            if(logger)logger(L"CheatShop: Construct's native close graph observed and checked.");
+        }
+    }
+    if(originalEvent)originalEvent(object,function,params);
+}
+bool ShopInViewport(void* widget) {
+    uint8_t flags=0;void* table=nullptr;void* getWorld=nullptr;
+    if(!LiveObject(widget)||!Read(widget,0xd9,flags)||(flags&0x20)==0||
+       !Read(widget,0,table)||!Read(table,0x198,getWorld))return false;
+    const uintptr_t fn=reinterpret_cast<uintptr_t>(getWorld);
+    if(fn<image+0x1000||fn>=image+0x7490000||!Range(getWorld,16))return false;
+    // Replicates execIsInViewport 03279335..0327935A without calling an exec/FFrame wrapper.
+    void* world=reinterpret_cast<ViewTargetFn>(getWorld)(widget);
+    if(!LiveObject(world))return false;
+    using SubsystemFn=void*(__fastcall*)(void*);
+    using ContainsFn=bool(__fastcall*)(void*,void*);
+    void* subsystem=reinterpret_cast<SubsystemFn>(image+0x31DA140)(world);
+    return LiveObject(subsystem)&&reinterpret_cast<ContainsFn>(image+0x31E4600)(subsystem,widget);
+}
+bool CloseShop() {
+    if(!closeSupported.load()||!OnGameThread()||!originalEvent||
+       !ValidShopGraph(shopWidget,shopGraph)||!ShopInViewport(shopWidget))return false;
+    // The real CloseCheaterButton event jumps to VM offset 10. Its graph runs
+    // SetInputMode_GameOnly, cursor=false, unpause, RemoveFromParent.
+    int32_t entryPoint=10;
+    originalEvent(shopWidget,shopGraph,&entryPoint);
+    if(logger)logger(L"CheatShop: native Close button graph dispatched. Player-control restoration requires game confirmation.");
+    return true;
+}
 bool ExecuteShop(void* controller) {
     if(!supported.load()||!OnGameThread()||!LiveObject(controller)||!DerivedFrom(controller,"PlayerController"))return false;
     void* table=nullptr;void* target=nullptr;
@@ -244,14 +297,19 @@ void Service(void* world) {
     void* controller=reinterpret_cast<FirstControllerFn>(image+0x3FA9D70)(world);
     if(!LiveObject(controller)||!DerivedFrom(controller,"PlayerController"))return;
     if(!pendingAt.compare_exchange_strong(requested,0))return;
+    static uint64_t lastDispatch=0;
+    if(lastDispatch&&now-lastDispatch<750){++cancellations;return;}
+    if(closeSupported.load()&&ValidShopGraph(shopWidget,shopGraph)&&ShopInViewport(shopWidget)) {
+        lastDispatch=now;
+        if(!CloseShop())++cancellations;
+        return;
+    }
     bool cursor=false;
     if(!ControllerCursor(controller,cursor)||cursor) {
         ++cancellations;
-        if(logger)logger(L"CheatShop: open-only shortcut ignored while a cursor/menu is active. Use the shop Close button to restore control.");
+        if(logger)logger(L"CheatShop: no verified visible shop to close; no command or input reset executed.");
         return;
     }
-    static uint64_t lastDispatch=0;
-    if(lastDispatch&&now-lastDispatch<750){++cancellations;return;}
     lastDispatch=now;
     if(!ExecuteShop(controller)) {
         ++cancellations;
@@ -297,6 +355,22 @@ void Initialize(Logger log) {
        MH_EnableHook(target)!=MH_OK) {
         if(logger)logger(L"Native console unavailable: world-tick hook could not be installed.");return;
     }
+    constexpr uint8_t manager[]={0x48,0x8b,0x81,0x60,0x0b,0x00,0x00};
+    constexpr uint8_t weapon[]={0x48,0x8b,0x81,0xd8,0x00,0x00,0x00};
+    constexpr uint8_t scope[]={0x0f,0xb6,0x81,0x3e,0x01,0x00,0x00};
+    weaponSupported=std::memcmp(reinterpret_cast<void*>(image+0x4CC0395),manager,sizeof(manager))==0&&
+        std::memcmp(reinterpret_cast<void*>(image+0x4CE0415),weapon,sizeof(weapon))==0&&
+        std::memcmp(reinterpret_cast<void*>(image+0x4CE0695),scope,sizeof(scope))==0;
+    constexpr uint8_t event[]={0x40,0x55,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57};
+    constexpr uint8_t viewport[]={0xf6,0x81,0xd9,0x00,0x00,0x00,0x20};
+    constexpr uint8_t subsystemCall[]={0xe8,0xf1,0x0d,0xf6,0xff};
+    constexpr uint8_t containsCall[]={0xe8,0xa1,0xb2,0xf6,0xff};
+    if(std::memcmp(reinterpret_cast<void*>(image+0x147D520),event,sizeof(event))==0&&
+       std::memcmp(reinterpret_cast<void*>(image+0x3279335),viewport,sizeof(viewport))==0&&
+       std::memcmp(reinterpret_cast<void*>(image+0x327934A),subsystemCall,sizeof(subsystemCall))==0&&
+       std::memcmp(reinterpret_cast<void*>(image+0x327935A),containsCall,sizeof(containsCall))==0&&
+       MH_CreateHook(reinterpret_cast<void*>(image+0x147D520),reinterpret_cast<void*>(&HookEvent),reinterpret_cast<void**>(&originalEvent))==MH_OK&&
+       MH_EnableHook(reinterpret_cast<void*>(image+0x147D520))==MH_OK)closeSupported=true;
     consoleSupported=true;
     if(logger)logger(L"V0.9C native console queue ready. Explicit F1/menu requests only; game-thread gate; no input simulation or door/progression hook.");
 }
@@ -315,6 +389,17 @@ bool ShopPending() {return pendingAt.load()!=0;}
 unsigned Requests() {return requests.load();}
 unsigned Dispatches() {return dispatches.load();}
 unsigned Cancellations() {return cancellations.load();}
+bool ShopCloseReady(){return closeSupported.load();}
+bool PlayerWeaponState(void* owner,bool& sniper,bool& scopeShown) {
+    sniper=false;scopeShown=false;
+    if(!weaponSupported.load()||!OnGameThread()||!LiveObject(owner))return false;
+    void* manager=nullptr;void* weapon=nullptr;uint8_t scope=0;
+    // Exact read-only getter loads checked during initialization.
+    if(!Read(owner,0xB60,manager)||!LiveObject(manager)||
+       !Read(manager,0xD8,weapon)||!LiveObject(weapon)||!Read(manager,0x13E,scope)||scope>1)return false;
+    sniper=DerivedFrom(weapon,"CRDivineSniper_BP_C");scopeShown=scope!=0;
+    return true;
+}
 bool PlayerCameraControllable(void* owner) {
     if(!supported.load()||!OnGameThread()||!lastTickPlayable.load()||
        GetTickCount64()-lastTickAt.load()>500)return false;

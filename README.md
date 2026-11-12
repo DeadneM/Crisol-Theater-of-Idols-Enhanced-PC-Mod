@@ -2,6 +2,10 @@
 
 Independent x64 ASI mod for **Crisol: Theater of Idols**. Built around an in-game Dear ImGui menu and a DXGI ASI loader.
 
+## V0.9H independent aim/sniper FOV and shop close
+
+Base: user-confirmed V0.9G normal FOV recovery; original doors retained. AimFOV and SniperFOV default to 80 and are independently adjustable. Absolute eased targets replace relative native aiming deltas. CheatShop F1 closure attempts the verified native Close button graph on the actual visible widget, rather than relaunching cheatshop or writing input flags. EXPERIMENTAL: sniper detection, transitions and shortcut closure require user confirmation.
+
 ## V0.9G restore working camera acquisition
 
 V0.9E/F control-state predicates failed in gameplay. Restore the V0.9D first-person camera acquisition path without the pre-capture controller/cinematic gates. Retain smooth offset, native aiming delta and original non-aim native-projection guard. Dedicated cine hook never writes projection. Gates and CheatShop unchanged. Generic menu/player-control detection is not claimed solved; user gameplay verification required.

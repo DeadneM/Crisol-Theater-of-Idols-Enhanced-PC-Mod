@@ -60,7 +60,8 @@ float g_blendWorld=0.f,g_blendFps=0.f;
 void ResetFovBlend(){g_blendCamera=0;g_blendTick=0;}
 
 
-std::atomic_int g_worldFov{90},g_fpsFov{85};
+std::atomic_int g_worldFov{90},g_fpsFov{85},g_aimFov{80},g_sniperFov{80};
+uint64_t g_aimTailUntil=0;
 std::atomic_bool g_worldEnabled{false},g_fpsEnabled{false};
 std::atomic_bool g_captureCamera{false},g_autoCamera{true};
 std::atomic_uint g_autoCameraCaptures{0},g_autoCameraReleases{0};
@@ -138,6 +139,8 @@ void SaveSettings(){
     swprintf_s(v,L"%d",g_flySpeed.load());WritePrivateProfileStringW(L"Freecam",L"Speed",v,g_ini.c_str());
     swprintf_s(v,L"%d",g_consoleScan.load());WritePrivateProfileStringW(L"Hotkeys",L"DeveloperConsoleScanCode",v,g_ini.c_str());
     swprintf_s(v,L"%d",g_worldFov.load());WritePrivateProfileStringW(L"Camera",L"WorldFOV",v,g_ini.c_str());
+    swprintf_s(v,L"%d",g_aimFov.load());WritePrivateProfileStringW(L"Camera",L"AimFOV",v,g_ini.c_str());
+    swprintf_s(v,L"%d",g_sniperFov.load());WritePrivateProfileStringW(L"Camera",L"SniperFOV",v,g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"WorldFOVEnabled",g_worldEnabled.load()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"FPSFOVEnabled",g_fpsEnabled.load()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"AutoCaptureGameplay",g_autoCamera.load()?L"1":L"0",g_ini.c_str());
@@ -161,13 +164,15 @@ void InitPathAndSettings(){
     g_smlConsoleVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"SMLConsoleVirtualKey",0,g_ini.c_str())),0,254);
     g_consoleScan=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"DeveloperConsoleScanCode",41,g_ini.c_str())),1,127);
     g_worldFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"WorldFOV",90,g_ini.c_str())),75,130);
+    g_aimFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"AimFOV",80,g_ini.c_str())),20,130);
+    g_sniperFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"SniperFOV",80,g_ini.c_str())),20,130);
     g_worldEnabled=GetPrivateProfileIntW(L"Camera",L"WorldFOVEnabled",0,g_ini.c_str())!=0;
     g_fpsEnabled=GetPrivateProfileIntW(L"Camera",L"FPSFOVEnabled",0,g_ini.c_str())!=0;
     g_autoCamera=GetPrivateProfileIntW(L"Camera",L"AutoCaptureGameplay",1,g_ini.c_str())!=0;
     crtoi::hub::SetEnabled(GetPrivateProfileIntW(L"Hub",L"AllowCompletedChapterReentry",1,g_ini.c_str())!=0);
     g_skipStartupVideos=GetPrivateProfileIntW(L"Startup",L"SkipIntroVideos",1,g_ini.c_str())!=0;
     g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",85,g_ini.c_str())),60,130);
-    Log(L"CRToi V0.9G TEST: V0.9D first-person capture path restored; smooth relative aiming FOV; dedicated cine output untouched. Original V0.9B hub reentry restored at user request.");
+    Log(L"CRToi V0.9H TEST: Independent aiming/sniper FOV (80 defaults); smooth absolute transitions; native shop Close path. Original V0.9B hub reentry restored at user request.");
 }
 // Suppress ONLY the three documented startup MP4 files in Crisol's
 // Content/Movies directory while the game is initializing. This avoids
@@ -605,51 +610,54 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
     std::memcpy(&baseWorld,view+0x30,4);
     std::memcpy(&baseFPS,view+0x38,4);
     if(!std::isfinite(baseWorld)||baseWorld<=1.f||baseWorld>=179.f)return;
-    bool aiming=ScopeInputHeld();
+    bool sniper=false,scopeShown=false;void* ownerActor=nullptr;double ownerRoot[3]{};
+    const bool knownWeapon=GetPlayerRootFromCamera(camera,ownerActor,ownerRoot)&&
+        crtoi::nativebridge::PlayerWeaponState(ownerActor,sniper,scopeShown);
+    bool aiming=ScopeInputHeld()||(knownWeapon&&scopeShown);
     // Restore the V0.9D first-person acquisition path. Controller/tick/cursor
     // predicates added in V0.9E/F prevented all gameplay capture in user tests.
     if(!GameplayWindowActive()){ResetFovBlend();return;}
-    if((object[0x262]&0x04)==0||(flags&0x02)==0||!std::isfinite(baseFPS)||baseWorld<=1.f||baseWorld>=179.f||
-       baseFPS<=1.f||baseFPS>=179.f)return;
+    const bool firstPerson=(object[0x262]&0x04)!=0&&(flags&0x02)!=0&&
+        std::isfinite(baseFPS)&&baseFPS>1.f&&baseFPS<179.f;
+    const bool capturedScope=knownWeapon&&sniper&&scopeShown&&
+        g_playerCamera.load()==reinterpret_cast<uintptr_t>(camera);
+    if(!firstPerson&&!capturedScope)return;
     ++g_firstPersonCandidates;
     const uintptr_t ptr=reinterpret_cast<uintptr_t>(camera);
-    if(g_captureCamera.load()&&!aiming){
+    if(g_captureCamera.load()&&!aiming&&firstPerson){
         // Keep the user-controlled fallback from V0.4A, unchanged in function.
         SetGameplayCamera(camera,baseWorld,baseFPS,false);
         g_captureCamera=false;
-    }else{
+    }else if(firstPerson){
         AutoCaptureCamera(camera,view,baseWorld,baseFPS,aiming);
     }
     if(g_playerCamera.load()!=ptr){ResetFovBlend();return;} // camera swap => vanilla
     g_playerLastSeen=GetTickCount64();
     g_nativeWorld.store(baseWorld);
     g_nativeFps.store(baseFPS);
-    // Preserve the validated native-transition guard when not aiming. During
-    // aiming, apply the native FOV delta on top of the configured normal FOV.
-    if(!aiming&&(std::abs(baseWorld-g_baselineWorld.load())>1.f||
-                 std::abs(baseFPS-g_baselineFps.load())>1.f)){
+    const uint64_t now=GetTickCount64();
+    if(aiming)g_aimTailUntil=now+2000;
+    const bool returningFromAim=now<g_aimTailUntil;
+    // Do not fall back to vanilla during the game's aim-release animation.
+    if(!aiming&&!returningFromAim&&(std::abs(baseWorld-g_baselineWorld.load())>1.f||
+        (firstPerson&&std::abs(baseFPS-g_baselineFps.load())>1.f))){
         ResetFovBlend();++g_scopeBypass;return;
     }
-    // Keep native aiming/zoom changes relative to the acquired normal baseline.
     HandleFlyCamera(camera,view,aiming);
-    const uint64_t now=GetTickCount64();
     if(g_blendCamera!=ptr||!g_blendTick||now-g_blendTick>250){
-        g_blendCamera=ptr;g_blendWorld=0.f;g_blendFps=0.f;g_blendTick=now;
+        g_blendCamera=ptr;g_blendWorld=baseWorld;g_blendFps=firstPerson?baseFPS:g_baselineFps.load();g_blendTick=now;
     }
-    // Frame-rate independent exponential easing; no writes outside gameplay.
     const float seconds=float(now-g_blendTick)*0.001f;g_blendTick=now;
-    g_blendWorld=crtoi::fov::EaseOffset(g_blendWorld,float(std::clamp(g_worldFov.load(),75,130))-g_baselineWorld.load(),seconds);
-    g_blendFps=crtoi::fov::EaseOffset(g_blendFps,float(std::clamp(g_fpsFov.load(),60,130))-g_baselineFps.load(),seconds);
+    const float target=crtoi::fov::SelectTarget(aiming,sniper,float(g_worldFov.load()),float(g_aimFov.load()),float(g_sniperFov.load()));
+    g_blendWorld=crtoi::fov::EaseOffset(g_blendWorld,target,seconds);
+    g_blendFps=crtoi::fov::EaseOffset(g_blendFps,float(g_fpsFov.load()),seconds);
     if(g_worldEnabled.load()){
-        const float value=crtoi::fov::ApplyOffset(baseWorld,g_blendWorld);
-        std::memcpy(view+0x30,&value,4);
-        std::memcpy(view+0x34,&value,4);
-        ++g_worldApplied;
+        const float value=std::clamp(g_blendWorld,1.f,179.f);
+        std::memcpy(view+0x30,&value,4);std::memcpy(view+0x34,&value,4);++g_worldApplied;
     }
-    if(g_fpsEnabled.load()){
-        const float value=crtoi::fov::ApplyOffset(baseFPS,g_blendFps);
-        std::memcpy(view+0x38,&value,4);
-        ++g_fpsApplied;
+    if(g_fpsEnabled.load()&&firstPerson){
+        const float value=std::clamp(g_blendFps,1.f,179.f);
+        std::memcpy(view+0x38,&value,4);++g_fpsApplied;
     }
 }
 void InstallCameraHook(){
@@ -797,10 +805,10 @@ void DrawMenu(){
     layout::StyleScope style;
     ImGui::SetNextWindowSize(ImVec2(720,555),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(520,370),ImVec2(1300,1020));
-    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.9G NATIVE SHOP + CAMERA TEST",
+    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.9H NATIVE SHOP + CAMERA TEST",
         &open,ImGuiWindowFlags_NoCollapse)){
         ImGui::TextColored(ImVec4(.52f,.83f,1.f,1.f),"CRISOL ENHANCED PC MOD");
-        ImGui::SameLine();ImGui::TextDisabled("V0.9G | NATIVE SHOP + CAMERA");
+        ImGui::SameLine();ImGui::TextDisabled("V0.9H | NATIVE SHOP + CAMERA");
         ImGui::Separator();ImGui::Spacing();
         ImGui::SetNextItemOpen(true,ImGuiCond_Once);
         if(layout::Group("Camera / Gameplay ownership")){
@@ -876,13 +884,21 @@ void DrawMenu(){
             if(ImGui::Checkbox("World FOV override",&world)){
                 g_worldEnabled=world;SaveSettings();
             }
-            ImGui::TextDisabled("Aiming follows the native FOV difference relative to your normal FOV setting.");
+            ImGui::TextDisabled("Independent normal, aiming and sniper FOV with smooth transitions.");
             if(world){
                 float value=float(g_worldFov.load());
                 if(layout::NumberRow("World FOV","WorldFOV",&value,75.f,130.f,90.f,
                     "%.0f deg","%.0f")){
                     g_worldFov=int(std::lround(value));SaveSettings();
                 }
+            }
+            float aim=float(g_aimFov.load());
+            if(layout::NumberRow("Aim FOV","AimFOV",&aim,20.f,130.f,80.f,"%.0f deg","%.0f")){
+                g_aimFov=int(std::lround(aim));SaveSettings();
+            }
+            float sniper=float(g_sniperFov.load());
+            if(layout::NumberRow("Sniper FOV","SniperFOV",&sniper,20.f,130.f,80.f,"%.0f deg","%.0f")){
+                g_sniperFov=int(std::lround(sniper));SaveSettings();
             }
             ImGui::Spacing();
             bool fps=g_fpsEnabled.load();
@@ -924,14 +940,15 @@ void DrawMenu(){
         }
         ImGui::SetNextItemOpen(true,ImGuiCond_Once);
         if(layout::Group("CheatShop (SML external mod)")){
-            ImGui::TextWrapped("Open CheatShop with one key press. Close using its own Close button to restore player control.");
+            ImGui::TextWrapped("Press once to open; press again to run the native Close button path. Its own Close button remains available.");
             ImGui::TextDisabled("Requires SML. Uses the game's command path without typing into the console.");
-            if(ImGui::Button("Open CheatShop")){
+            if(ImGui::Button("Open / close CheatShop")){
                 g_menuOpen=false;
                 open=false;
                 RequestCheatShop();
             }
             ImGui::Spacing();
+            ImGui::TextDisabled(crtoi::nativebridge::ShopCloseReady()?"Native close path available; verified widget required.":"Shortcut closure unavailable; use the shop Close button.");
             const int vk=g_cheatShopVK.load();
             if(vk>=VK_F1&&vk<=VK_F12)
                 ImGui::Text("CheatShop shortcut: F%d",vk-VK_F1+1);

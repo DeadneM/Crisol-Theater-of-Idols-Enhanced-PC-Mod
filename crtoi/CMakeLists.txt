@@ -38,4 +38,4 @@ add_executable(hub_policy_tests tests/HubPolicyTests.cpp)
 add_test(NAME completed_chapter_access_policy COMMAND hub_policy_tests)
 
 add_executable(fov_policy_tests tests/FovPolicyTests.cpp)
-add_test(NAME relative_aim_and_smooth_fov COMMAND fov_policy_tests)
+add_test(NAME independent_aim_sniper_and_smooth_fov COMMAND fov_policy_tests)
