@@ -167,7 +167,7 @@ void InitPathAndSettings(){
     crtoi::hub::SetEnabled(GetPrivateProfileIntW(L"Hub",L"AllowCompletedChapterReentry",1,g_ini.c_str())!=0);
     g_skipStartupVideos=GetPrivateProfileIntW(L"Startup",L"SkipIntroVideos",1,g_ini.c_str())!=0;
     g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",85,g_ini.c_str())),60,130);
-    Log(L"CRToi V0.9F TEST: gameplay FOV restored, native aiming delta, open-only CheatShop; native menus/cinematics. Original V0.9B hub reentry restored at user request.");
+    Log(L"CRToi V0.9G TEST: V0.9D first-person capture path restored; smooth relative aiming FOV; dedicated cine output untouched. Original V0.9B hub reentry restored at user request.");
 }
 // Suppress ONLY the three documented startup MP4 files in Crisol's
 // Content/Movies directory while the game is initializing. This avoids
@@ -606,13 +606,9 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
     std::memcpy(&baseFPS,view+0x38,4);
     if(!std::isfinite(baseWorld)||baseWorld<=1.f||baseWorld>=179.f)return;
     bool aiming=ScopeInputHeld();
-    if(ObserveCinematic(camera,false))return;
-    void* playerOwner=nullptr;double root[3]{};
-    if(g_menuOpen.load()||!GameplayWindowActive()||
-       !GetPlayerRootFromCamera(camera,playerOwner,root)||
-       !crtoi::nativebridge::PlayerCameraControllable(playerOwner)){
-        ResetFovBlend();return;
-    }
+    // Restore the V0.9D first-person acquisition path. Controller/tick/cursor
+    // predicates added in V0.9E/F prevented all gameplay capture in user tests.
+    if(!GameplayWindowActive()){ResetFovBlend();return;}
     if((object[0x262]&0x04)==0||(flags&0x02)==0||!std::isfinite(baseFPS)||baseWorld<=1.f||baseWorld>=179.f||
        baseFPS<=1.f||baseFPS>=179.f)return;
     ++g_firstPersonCandidates;
@@ -628,6 +624,12 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
     g_playerLastSeen=GetTickCount64();
     g_nativeWorld.store(baseWorld);
     g_nativeFps.store(baseFPS);
+    // Preserve the validated native-transition guard when not aiming. During
+    // aiming, apply the native FOV delta on top of the configured normal FOV.
+    if(!aiming&&(std::abs(baseWorld-g_baselineWorld.load())>1.f||
+                 std::abs(baseFPS-g_baselineFps.load())>1.f)){
+        ResetFovBlend();++g_scopeBypass;return;
+    }
     // Keep native aiming/zoom changes relative to the acquired normal baseline.
     HandleFlyCamera(camera,view,aiming);
     const uint64_t now=GetTickCount64();
@@ -795,10 +797,10 @@ void DrawMenu(){
     layout::StyleScope style;
     ImGui::SetNextWindowSize(ImVec2(720,555),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(520,370),ImVec2(1300,1020));
-    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.9F NATIVE SHOP + CAMERA TEST",
+    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.9G NATIVE SHOP + CAMERA TEST",
         &open,ImGuiWindowFlags_NoCollapse)){
         ImGui::TextColored(ImVec4(.52f,.83f,1.f,1.f),"CRISOL ENHANCED PC MOD");
-        ImGui::SameLine();ImGui::TextDisabled("V0.9F | NATIVE SHOP + CAMERA");
+        ImGui::SameLine();ImGui::TextDisabled("V0.9G | NATIVE SHOP + CAMERA");
         ImGui::Separator();ImGui::Spacing();
         ImGui::SetNextItemOpen(true,ImGuiCond_Once);
         if(layout::Group("Camera / Gameplay ownership")){
@@ -820,7 +822,7 @@ void DrawMenu(){
                 g_autoCandidate=0;g_autoCandidateFrames=0;
             }
             ImGui::TextDisabled("Waits for the normal gameplay projection after loading; manual capture remains available.");
-            ImGui::TextDisabled("Player control only. Menus/cinematics keep native FOV; gameplay resumes smoothly.");
+            ImGui::TextDisabled("Captured first-person camera only; dedicated cine cameras stay native. Gameplay FOV resumes smoothly.");
             ImGui::Text("Auto captures: %u | transitions: %u",
                 g_autoCameraCaptures.load(),g_autoCameraReleases.load());
             ImGui::TextWrapped("Manual recapture remains available if the game camera is not recognized.");
