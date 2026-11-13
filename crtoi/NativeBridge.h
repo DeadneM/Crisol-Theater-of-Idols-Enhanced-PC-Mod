@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include <string>
 
 namespace crtoi::nativebridge {
 using Logger=void(*)(const wchar_t*);
@@ -7,8 +8,9 @@ void Initialize(Logger log);
 bool Ready();
 bool ConsoleReady();
 bool QueueShop(HWND gameWindow);
-bool QueueConsole(HWND gameWindow);
-bool ConsoleToggleReady();
+bool QueueConsoleCommand(HWND gameWindow,const char* text);
+unsigned ConsoleReplyVersion();
+std::string ConsoleReply();
 bool QuickSaveReady();
 bool QueueQuickSave(HWND gameWindow,bool fromOverlay=false);
 bool QueueQuickLoad(HWND gameWindow,bool fromOverlay=false);

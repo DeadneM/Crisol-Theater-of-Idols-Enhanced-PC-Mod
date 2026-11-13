@@ -6,7 +6,7 @@ Independent x64 ASI mod for **Crisol: Theater of Idols**. Built around an in-gam
 
 Save/load keys (defaults F5/F8), console, overlay, CheatShop, freecam and teleport are rebindable with conflict checks and INI persistence. The mod overlay no longer vetoes FOV/camera acquisition. Save/load requests explicitly originating in that overlay allow its UI state; backup, ownership, loading and file checks remain.
 
-Console toggle uses the native controller ConsoleKey path on the game thread. If the viewport console is absent, it attempts native UConsole creation using the engine ConsoleClass and property setter. Uses the engine's own console FKey and verified ownership ABI; no fake keyboard/FFRAME. Wrong/missing native schemas remain inert with diagnostics. Actual opening and overlay/rebind behavior require gameplay confirmation. Earlier FullAim sight test remains withdrawn.
+Console key opens an in-mod command window, with input/output and game-thread command execution through the already-verified native ConsoleCommand ABI used by CheatShop. Static audit proved base APlayerController::ConsoleKey is a parameter-destructor stub in this shipping executable; no ineffective native toggle/constructor experiment is delivered. Escape closes the command window. Actual command execution and overlay/rebind behavior require gameplay confirmation. Earlier FullAim sight test remains withdrawn.
 
 ## V0.10C F5 save / F8 load / console-key routing
 

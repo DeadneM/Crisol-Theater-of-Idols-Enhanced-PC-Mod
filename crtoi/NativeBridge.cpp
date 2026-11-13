@@ -14,14 +14,17 @@
 #include <cstddef>
 #include <shlobj.h>
 #include <string>
+#include <mutex>
+#include <algorithm>
 
 namespace crtoi::nativebridge {
 namespace {
 Logger logger=nullptr;
 uintptr_t image=0;
-std::atomic_bool quickSupported{false},loadSupported{false},consoleToggleSupported{false};
+std::atomic_bool quickSupported{false},loadSupported{false};
 std::atomic_bool saveFromOverlay{false},loadFromOverlay{false};
 std::atomic_uint64_t consoleAt{0};
+std::mutex commandMutex;std::wstring queuedCommand;std::string commandReply;std::atomic_uint replyVersion{0};
 std::atomic<HWND> consoleWindow{nullptr};
 std::atomic_uint64_t quickAt{0},loadAt{0},playableAt{0},quickStatusAt{0};
 std::atomic<void*> playableOwner{nullptr};
@@ -476,67 +479,30 @@ void ServiceQuickLoad(void* world){
     reinterpret_cast<LoadFn>(image+0x4DC7EC0)(world,0);
     // Do not dereference actors/world after native level travel begins.
 }
-bool ObjectField(void* object,const char* name,const char* type,void*& value,Property* found=nullptr){
-    void* cls=nullptr;Property p;
-    if(!LiveObject(object)||!Read(object,0x10,cls)||!FindProperty(cls,name,type,8,p,true)||!Read(object,size_t(p.offset),value))return false;
-    if(found)*found=p;return true;
-}
-bool ConsoleClassValid(void* cls){
-    if(!LiveObject(cls))return false;
-    for(int n=0;cls&&n<16;++n){if(Named(cls,0x18,"Console"))return true;if(!Read(cls,0x40,cls))return false;}
-    return false;
-}
-void ServiceConsole(void* world){
+void ServiceConsoleCommand(void* world){
     uint64_t requested=consoleAt.load();if(!requested)return;
     if(!consoleAt.compare_exchange_strong(requested,0))return;
-    if(!OnGameThread()||!LiveObject(world)||GetTickCount64()-requested>1500||GetForegroundWindow()!=consoleWindow.load())return;
-    void* engine=nullptr;void* viewport=nullptr;void* console=nullptr;Property consoleProperty;
-    if(!Read(reinterpret_cast<void*>(image),0x9944860,engine)||
-       !ObjectField(engine,"GameViewport","ObjectProperty",viewport)||!LiveObject(viewport)||
-       !ObjectField(viewport,"ViewportConsole","ObjectProperty",console,&consoleProperty)){
-        consoleToggleSupported=false;if(logger)logger(L"Console unavailable: native viewport schema not found; original console key remains available.");return;
-    }
-    if(!console){
-        void* cls=nullptr;
-        if(!ObjectField(engine,"ConsoleClass","ClassProperty",cls)||!ConsoleClassValid(cls)){
-            consoleToggleSupported=false;if(logger)logger(L"Console unavailable: engine ConsoleClass is not loaded; original console key remains available.");return;
+    std::wstring command;{std::lock_guard<std::mutex> lock(commandMutex);command=std::move(queuedCommand);}
+    std::string reply="Command unavailable in the current game state.";
+    if(OnGameThread()&&LiveObject(world)&&GetTickCount64()-requested<3000&&GetForegroundWindow()==consoleWindow.load()){
+        void* controller=reinterpret_cast<FirstControllerFn>(image+0x3FA9D70)(world);void* table=nullptr;void* target=nullptr;
+        if(!command.empty()&&LiveObject(controller)&&Read(controller,0,table)&&Read(table,0xDE0,target)&&
+           reinterpret_cast<uintptr_t>(target)>=image+0x1000&&reinterpret_cast<uintptr_t>(target)<image+0x7490000&&Range(target,16)){
+            const FString input{command.data(),int32_t(command.size()+1),int32_t(command.size()+1)};FString output{};
+            reinterpret_cast<ConsoleFn>(target)(controller,&output,&input,true);
+            reply="Command sent.";
+            if(output.data){
+                const int count=output.count>0?std::min(output.count-1,2048):0;
+                if(count>0&&Range(output.data,size_t(count)*2)){
+                    const int bytes=WideCharToMultiByte(CP_UTF8,0,output.data,count,nullptr,0,nullptr,nullptr);
+                    if(bytes>0){reply.resize(size_t(bytes));WideCharToMultiByte(CP_UTF8,0,output.data,count,reply.data(),bytes,nullptr,nullptr);}
+                }
+                reinterpret_cast<FreeFn>(image+0x112ABC0)(output.data);
+            }
+            if(logger)logger(L"Mod console: explicit user command dispatched through native ConsoleCommand.");
         }
-        // execSpawnObject passes a TSubclassOf pointer, not a guessed raw UClass ABI.
-        using SpawnFn=void*(__fastcall*)(void* const*,void*);
-        console=reinterpret_cast<SpawnFn>(image+0x38B9A30)(&cls,viewport);
-        if(!LiveObject(console)||!DerivedFrom(console,"Console"))return;
-        // Same property/container/value/index call as execSetObjectPropertyByName.
-        using SetObjectFn=void(__fastcall*)(void*,void*,void*,int);
-        reinterpret_cast<SetObjectFn>(image+0x1446850)(consoleProperty.address,viewport,console,0);
-        void* attached=nullptr;
-        if(!Read(viewport,size_t(consoleProperty.offset),attached)||attached!=console)return;
-        if(logger)logger(L"Console: native UConsole created and attached through the engine object-property setter.");
     }
-    if(!LiveObject(console)||!DerivedFrom(console,"Console"))return;
-    using StaticClassFn=void*(__fastcall*)();
-    void* settingsClass=reinterpret_cast<StaticClassFn>(image+0x3F516F0)();void* settings=nullptr;void* cls=nullptr;
-    Property keys;void* data=nullptr;int32_t count=0,capacity=0;
-    if(!LiveObject(settingsClass)||!Read(settingsClass,0x110,settings)||!LiveObject(settings)||
-       !Read(settings,0x10,cls)||!FindProperty(cls,"ConsoleKeys","ArrayProperty",16,keys,true)||
-       !Read(settings,size_t(keys.offset),data)||!Read(settings,size_t(keys.offset)+8,count)||
-       !Read(settings,size_t(keys.offset)+12,capacity)||count<1||count>16||capacity<count||!Range(data,24)){
-        consoleToggleSupported=false;if(logger)logger(L"Console unavailable: no configured engine console FKey; original console key remains available.");return;
-    }
-    struct Key {uint32_t name,number;void* details;void* control;};static_assert(sizeof(Key)==24);
-    Key key{};std::memcpy(&key,data,sizeof(key));
-    void* controller=reinterpret_cast<FirstControllerFn>(image+0x3FA9D70)(world);void* table=nullptr;void* target=nullptr;
-    if(!LiveObject(controller)||!Read(controller,0,table)||!Read(table,0xCF8,target))return;
-    const uintptr_t fn=reinterpret_cast<uintptr_t>(target);
-    if(fn<image+0x1000||fn>=image+0x7490000||!Range(target,16))return;
-    if(key.control){
-        auto* refs=reinterpret_cast<LONG*>(static_cast<uint8_t*>(key.control)+8);
-        if(!Range(refs,4,true))return;InterlockedIncrement(refs);
-    }
-    // execConsoleKey copies 24 bytes and increments this control block before
-    // dispatch; the by-value FKey parameter is destroyed by the native callee.
-    using ConsoleKeyFn=void(__fastcall*)(void*,Key*);
-    reinterpret_cast<ConsoleKeyFn>(target)(controller,&key);
-    if(logger)logger(L"Console: native PlayerController ConsoleKey dispatched with the configured engine key. Visual opening requires game confirmation.");
+    {std::lock_guard<std::mutex> lock(commandMutex);commandReply=std::move(reply);++replyVersion;}
 }
 void __fastcall HookWorldTick(void* world,int tickType,float delta) {
     thread_local bool busy=false;
@@ -545,7 +511,7 @@ void __fastcall HookWorldTick(void* world,int tickType,float delta) {
     if(originalTick)originalTick(world,tickType,delta);
 
     if(outer&&consoleSupported.load())Service(world);
-    if(outer&&consoleToggleSupported.load())ServiceConsole(world);
+    if(outer&&consoleSupported.load())ServiceConsoleCommand(world);
     if(outer&&quickSupported.load()&&OnGameThread())ServiceQuickSave(world);
     if(outer&&loadSupported.load()&&OnGameThread())ServiceQuickLoad(world);
     if(outer)busy=false;
@@ -613,14 +579,6 @@ void Initialize(Logger log) {
         std::memcmp(reinterpret_cast<void*>(image+0x4C90077),loadCall,sizeof(loadCall))==0&&
         std::memcmp(reinterpret_cast<void*>(image+0x4DC7EC0),loadBody,sizeof(loadBody))==0&&
         std::memcmp(reinterpret_cast<void*>(image+0x4C9B335),loadFlag,sizeof(loadFlag))==0;
-    constexpr uint8_t consoleKeySlot[]={0x4c,0x8b,0x80,0xf8,0x0c,0x00,0x00};
-    constexpr uint8_t spawnCall[]={0xe8,0xd1,0x3b,0xfe,0xff};
-    constexpr uint8_t propertyCall[]={0xe8,0x5b,0x06,0xa3,0xfd};
-    constexpr uint8_t inputClassCall[]={0xe8,0x2b,0x3b,0xfc,0xff};
-    consoleToggleSupported=std::memcmp(reinterpret_cast<void*>(image+0x3CB9F04),consoleKeySlot,sizeof(consoleKeySlot))==0&&
-        std::memcmp(reinterpret_cast<void*>(image+0x38D5E5A),spawnCall,sizeof(spawnCall))==0&&
-        std::memcmp(reinterpret_cast<void*>(image+0x3A161F0),propertyCall,sizeof(propertyCall))==0&&
-        std::memcmp(reinterpret_cast<void*>(image+0x3F8DBC0),inputClassCall,sizeof(inputClassCall))==0;
     consoleSupported=true;
     if(logger)logger(L"V0.9C native console queue ready. Explicit F1/menu requests only; game-thread gate; no input simulation or door/progression hook.");
 }
@@ -635,13 +593,17 @@ bool QueueShop(HWND window) {
     if(!pendingAt.compare_exchange_strong(expected,GetTickCount64()))return false;
     ++requests;return true;
 }
-bool ConsoleToggleReady(){return consoleToggleSupported.load();}
-bool QueueConsole(HWND window){
-    if(!consoleToggleSupported.load()||!window||GetForegroundWindow()!=window)return false;
+bool QueueConsoleCommand(HWND window,const char* text){
+    if(!consoleSupported.load()||!window||!text||GetForegroundWindow()!=window)return false;
     DWORD process=0;GetWindowThreadProcessId(window,&process);if(process!=GetCurrentProcessId())return false;
-    uint64_t expected=0;consoleWindow=window;
-    return consoleAt.compare_exchange_strong(expected,GetTickCount64());
+    const size_t length=std::strlen(text);if(!length||length>1023)return false;
+    const int count=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text,int(length),nullptr,0);if(count<=0)return false;
+    std::lock_guard<std::mutex> lock(commandMutex);if(consoleAt.load())return false;
+    queuedCommand.resize(size_t(count));MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text,int(length),queuedCommand.data(),count);
+    consoleWindow=window;consoleAt=GetTickCount64();return true;
 }
+unsigned ConsoleReplyVersion(){return replyVersion.load();}
+std::string ConsoleReply(){std::lock_guard<std::mutex> lock(commandMutex);return commandReply;}
 bool QuickSaveReady(){return quickSupported.load();}
 void MarkGameplayForSave(void* owner){playableOwner=owner;playableAt=GetTickCount64();}
 bool QueueQuickSave(HWND window,bool fromOverlay) {

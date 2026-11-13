@@ -44,6 +44,7 @@ std::atomic_bool g_skipStartupVideos{true};
 std::atomic_uint g_introVideoOpensSuppressed{0};
 std::atomic_bool g_introHookWReady{false},g_introHook2Ready{false};
 std::atomic_int g_captureHotkey{0},g_menuVK{VK_HOME},g_consoleScan{0x29},g_consoleVK{0},g_quickSaveVK{VK_F5},g_quickLoadVK{VK_F8};
+std::atomic_bool g_consoleOpen{false};
 std::atomic_uint64_t g_consoleCharUntil{0};
 std::atomic_uint g_consoleLastScan{0};
 bool g_lastGameplayAim=false;
@@ -201,7 +202,7 @@ void InitPathAndSettings(){
     crtoi::hub::SetEnabled(GetPrivateProfileIntW(L"Hub",L"AllowCompletedChapterReentry",1,g_ini.c_str())!=0);
     g_skipStartupVideos=GetPrivateProfileIntW(L"Startup",L"SkipIntroVideos",1,g_ini.c_str())!=0;
     g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",105,g_ini.c_str())),60,130);
-    Log(L"CRToi V0.10D TEST: Rebindable save/load/console; overlay-independent FOV/actions; native console creation/toggle; V0.9I behavior retained. Original V0.9B hub reentry restored at user request.");
+    Log(L"CRToi V0.10D TEST: Rebindable save/load/console; overlay-independent FOV/actions; in-mod command console using native execution; V0.9I behavior retained. Original V0.9B hub reentry restored at user request.");
 }
 // Suppress ONLY the three documented startup MP4 files in Crisol's
 // Content/Movies directory while the game is initializing. This avoids
@@ -641,7 +642,7 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
     bool sniper=false,scopeShown=false;void* ownerActor=nullptr;double ownerRoot[3]{};
     const bool knownWeapon=GetPlayerRootFromCamera(camera,ownerActor,ownerRoot)&&
         crtoi::nativebridge::PlayerWeaponState(ownerActor,sniper,scopeShown);
-    if(!g_menuOpen.load())g_lastGameplayAim=ScopeInputHeld()||(knownWeapon&&scopeShown);
+    if(!g_menuOpen.load()&&!g_consoleOpen.load())g_lastGameplayAim=ScopeInputHeld()||(knownWeapon&&scopeShown);
     bool aiming=g_lastGameplayAim||(knownWeapon&&scopeShown);
     // Restore the V0.9D first-person acquisition path. Controller/tick/cursor
     // predicates added in V0.9E/F prevented all gameplay capture in user tests.
@@ -767,19 +768,19 @@ LRESULT CALLBACK WindowProc(HWND wnd,UINT msg,WPARAM wp,LPARAM lp){
         (g_consoleVK.load()?int(wp)==g_consoleVK.load():scan==unsigned(g_consoleScan.load()))&&
         (GetKeyState(VK_MENU)&0x8000)==0&&(GetKeyState(VK_CONTROL)&0x8000)==0;
     if(msg==WM_CHAR&&GetTickCount64()<g_consoleCharUntil.load()&&scan==g_consoleLastScan.load())return 0;
-    if(consoleKey&&g_captureHotkey.load()==0&&!crtoi::nativebridge::ConsoleToggleReady()){
-        if(msg==WM_KEYDOWN||msg==WM_SYSKEYDOWN){g_menuOpen=false;StopFly(L"Freecam stopped for console key.");}
-        return g_previousWndProc?CallWindowProcW(g_previousWndProc,wnd,msg,wp,lp):DefWindowProcW(wnd,msg,wp,lp);
-    }
-    if(consoleKey&&g_captureHotkey.load()==0&&crtoi::nativebridge::ConsoleToggleReady()){
-        if((msg==WM_KEYDOWN||msg==WM_SYSKEYDOWN)&&!(lp&(1LL<<30))){
-            g_menuOpen=false;StopFly(L"Freecam stopped for console.");
-            g_consoleLastScan=scan;g_consoleCharUntil=GetTickCount64()+200;
-            crtoi::nativebridge::QueueConsole(g_gameHwnd);
+    if(consoleKey&&g_captureHotkey.load()==0){
+        const bool letter=(wp>='A'&&wp<='Z')||(wp>='0'&&wp<='9');
+        if(!(g_consoleOpen.load()&&letter)){
+            if((msg==WM_KEYDOWN||msg==WM_SYSKEYDOWN)&&!(lp&(1LL<<30))){
+                g_menuOpen=false;StopFly(L"Freecam stopped for console.");g_consoleOpen=!g_consoleOpen.load();
+                g_consoleLastScan=scan;g_consoleCharUntil=GetTickCount64()+200;
+            }
+            return 0;
         }
-        return 0;
     }
-    if(msg==WM_KEYDOWN || msg==WM_SYSKEYDOWN){
+    if(g_consoleOpen.load()&&wp==VK_ESCAPE&&(msg==WM_KEYDOWN||msg==WM_SYSKEYDOWN)){g_consoleOpen=false;return 0;}
+    const bool typingConsole=g_consoleOpen.load()&&msg==WM_KEYDOWN&&!(wp>=VK_F1&&wp<=VK_F24);
+    if(!typingConsole&&(msg==WM_KEYDOWN || msg==WM_SYSKEYDOWN)){
         if(!(lp & (1LL<<30))){
             const int capture=g_captureHotkey.exchange(0);
             if(capture) {
@@ -791,23 +792,23 @@ LRESULT CALLBACK WindowProc(HWND wnd,UINT msg,WPARAM wp,LPARAM lp){
                 (GetKeyState(VK_CONTROL)&0x8000)!=0,(GetKeyState(VK_SHIFT)&0x8000)!=0,g_quickSaveVK.load(),g_quickLoadVK.load());
             if(quick==crtoi::hotkeys::QuickAction::Load){
                 StopFly(L"Freecam stopped before quick load.");
-                if(!crtoi::nativebridge::QueueQuickLoad(g_gameHwnd,g_menuOpen.load()))Log(L"F8 quick load unavailable or already queued.");
+                if(!crtoi::nativebridge::QueueQuickLoad(g_gameHwnd,g_menuOpen.load()||g_consoleOpen.load()))Log(L"F8 quick load unavailable or already queued.");
                 return 0;
             }
             if(quick==crtoi::hotkeys::QuickAction::Save){
                 if(g_flyActive.load())Log(L"F5 refused while freecam is active.");
                 else {
-                    if(!crtoi::nativebridge::QueueQuickSave(g_gameHwnd,g_menuOpen.load()))Log(L"F5 quick save unavailable or already queued.");
+                    if(!crtoi::nativebridge::QueueQuickSave(g_gameHwnd,g_menuOpen.load()||g_consoleOpen.load()))Log(L"F5 quick save unavailable or already queued.");
                 }
                 return 0;
             }
             if(int(wp)==g_menuVK.load()){
-                g_menuOpen=!g_menuOpen.load();
+                g_consoleOpen=false;g_menuOpen=!g_menuOpen.load();
                 return 0;
             }
             if(int(wp)==g_cheatShopVK.load()){
                 StopFly(L"Freecam stopped before CheatShop.");
-                g_menuOpen=false;
+                g_consoleOpen=false;g_menuOpen=false;
                 RequestCheatShop();
                 return 0;
             }
@@ -834,7 +835,7 @@ LRESULT CALLBACK WindowProc(HWND wnd,UINT msg,WPARAM wp,LPARAM lp){
         if(msg==WM_CHAR&&(wp=='w'||wp=='a'||wp=='s'||wp=='d'||
             wp=='z'||wp=='q'||wp=='W'||wp=='A'||wp=='S'||wp=='D'))return 0;
     }
-    if(g_menuOpen.load()&&g_imguiReady.load()){
+    if((g_menuOpen.load()||g_consoleOpen.load())&&g_imguiReady.load()){
         if(msg==WM_INPUT)return DefWindowProcW(wnd,msg,wp,lp);
         // Win32 WndProc may run on a different UE thread from Present.
         // Queue character and wheel input; consume only on the rendering thread.
@@ -1030,7 +1031,7 @@ void DrawMenu(){
                 crtoi::nativebridge::QueueQuickSave(g_gameHwnd,true);
             }
             if(crtoi::nativebridge::QuickLoadReady()&&ImGui::Button("Quick load now")){
-                StopFly(L"Freecam stopped for quick load.");crtoi::nativebridge::QueueQuickLoad(g_gameHwnd,g_menuOpen.load());
+                StopFly(L"Freecam stopped for quick load.");crtoi::nativebridge::QueueQuickLoad(g_gameHwnd,g_menuOpen.load()||g_consoleOpen.load());
             }
         }
         ImGui::SetNextItemOpen(false,ImGuiCond_Once);
@@ -1054,8 +1055,8 @@ void DrawMenu(){
             ImGui::Text("Console key: %s",KeyLabel(EffectiveKey(8,g_consoleVK.load())).c_str());
             if(ImGui::Button(g_captureHotkey.load()==8?"Press console key...":"Rebind console key"))g_captureHotkey=8;
             ImGui::SameLine();if(ImGui::Button("Default console key"))TryBind(8,0);
-            if(crtoi::nativebridge::ConsoleToggleReady()&&ImGui::Button("Open console")){
-                g_menuOpen=false;open=false;StopFly(L"Freecam stopped for console.");crtoi::nativebridge::QueueConsole(g_gameHwnd);
+            if(ImGui::Button("Open console")){
+                g_menuOpen=false;open=false;StopFly(L"Freecam stopped for console.");g_consoleOpen=true;
             }
         }
         ImGui::SetNextItemOpen(false,ImGuiCond_Once);
@@ -1166,6 +1167,27 @@ bool InitUi(IDXGISwapChain* swap){
     Log(L"Overlay V0.2A initialized (in-process DXGI Present). Press Insert.");
     return true;
 }
+void DrawCommandConsole(){
+    if(!g_consoleOpen.load())return;
+    static char input[1024]{};static std::vector<std::string> lines;static unsigned version=0;static bool focus=true;
+    const unsigned current=crtoi::nativebridge::ConsoleReplyVersion();
+    if(current!=version){version=current;lines.push_back(crtoi::nativebridge::ConsoleReply());}
+    if(lines.size()>100)lines.erase(lines.begin(),lines.begin()+int(lines.size()-100));
+    bool open=true;ImGui::SetNextWindowSize(ImVec2(760,330),ImGuiCond_FirstUseEver);
+    if(ImGui::Begin("Game command console",&open)){
+        ImGui::TextDisabled("Game commands | Esc closes | No operating-system commands");
+        ImGui::BeginChild("##ConsoleOutput",ImVec2(0,-ImGui::GetFrameHeightWithSpacing()*2),true);
+        for(const auto& line:lines)ImGui::TextUnformatted(line.c_str());
+        ImGui::EndChild();
+        if(focus||ImGui::IsWindowAppearing()){ImGui::SetKeyboardFocusHere();focus=false;}
+        if(ImGui::InputText("Command",input,sizeof(input),ImGuiInputTextFlags_EnterReturnsTrue)){
+            if(crtoi::nativebridge::QueueConsoleCommand(g_gameHwnd,input)){lines.push_back(std::string("> ")+input);input[0]=0;}
+            else lines.push_back("Command pending or unavailable.");focus=true;
+        }
+        if(ImGui::Button("Clear output"))lines.clear();
+    }
+    ImGui::End();g_consoleOpen=open;
+}
 void DrawQuickSaveToast(){
     const uint64_t changed=crtoi::nativebridge::QuickSaveStatusAt();
     if(!changed||GetTickCount64()-changed>4000)return;
@@ -1185,7 +1207,7 @@ void Render(IDXGISwapChain* swap){
         if(++attempts>20){g_failed=true;Log(L"Overlay init attempted 20 times; fail-open.");return;}
         if(!InitUi(swap))return;
     }
-    if(!g_menuOpen.load())return;
+    if(!g_menuOpen.load()&&!g_consoleOpen.load())return;
     ID3D11RenderTargetView* rtv=nullptr;
     ID3D11Texture2D* wrapped=nullptr;
     if(!PrepareRtv(&rtv,&wrapped))return;
@@ -1230,6 +1252,7 @@ void Render(IDXGISwapChain* swap){
     g_charRead.store(read,std::memory_order_relaxed);
     ImGui::NewFrame();
     DrawMenu();
+    DrawCommandConsole();
     DrawQuickSaveToast();
     ImGui::Render();
     ComPtr<ID3D11RenderTargetView> prior;

@@ -12,7 +12,7 @@ int main() {
     MarkGameplayForSave(reinterpret_cast<void*>(1));
     if(QuickSaveReady()||QueueQuickSave(reinterpret_cast<HWND>(1)))return 7;
     if(QuickLoadReady()||QueueQuickLoad(reinterpret_cast<HWND>(1)))return 9;
-    if(ConsoleToggleReady()||QueueConsole(reinterpret_cast<HWND>(1)))return 10;
+    if(QueueConsoleCommand(reinterpret_cast<HWND>(1),"cheatshop"))return 10;
     bool sniper=false,scope=false;
     if(PlayerWeaponState(reinterpret_cast<void*>(1),sniper,scope)||ShopCloseReady())return 6;
     bool cinematic=false;
