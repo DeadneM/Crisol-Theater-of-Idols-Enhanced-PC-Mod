@@ -489,17 +489,17 @@ bool ConsoleClassValid(void* cls){
 void ServiceConsole(void* world){
     uint64_t requested=consoleAt.load();if(!requested)return;
     if(!consoleAt.compare_exchange_strong(requested,0))return;
-    if(!OnGameThread()||GetTickCount64()-requested>1500||GetForegroundWindow()!=consoleWindow.load())return;
+    if(!OnGameThread()||!LiveObject(world)||GetTickCount64()-requested>1500||GetForegroundWindow()!=consoleWindow.load())return;
     void* engine=nullptr;void* viewport=nullptr;void* console=nullptr;Property consoleProperty;
     if(!Read(reinterpret_cast<void*>(image),0x9944860,engine)||
        !ObjectField(engine,"GameViewport","ObjectProperty",viewport)||!LiveObject(viewport)||
        !ObjectField(viewport,"ViewportConsole","ObjectProperty",console,&consoleProperty)){
-        if(logger)logger(L"Console unavailable: native viewport schema not found.");return;
+        consoleToggleSupported=false;if(logger)logger(L"Console unavailable: native viewport schema not found; original console key remains available.");return;
     }
     if(!console){
         void* cls=nullptr;
         if(!ObjectField(engine,"ConsoleClass","ClassProperty",cls)||!ConsoleClassValid(cls)){
-            if(logger)logger(L"Console unavailable: engine ConsoleClass is not loaded.");return;
+            consoleToggleSupported=false;if(logger)logger(L"Console unavailable: engine ConsoleClass is not loaded; original console key remains available.");return;
         }
         // execSpawnObject passes a TSubclassOf pointer, not a guessed raw UClass ABI.
         using SpawnFn=void*(__fastcall*)(void* const*,void*);
@@ -520,7 +520,7 @@ void ServiceConsole(void* world){
        !Read(settings,0x10,cls)||!FindProperty(cls,"ConsoleKeys","ArrayProperty",16,keys,true)||
        !Read(settings,size_t(keys.offset),data)||!Read(settings,size_t(keys.offset)+8,count)||
        !Read(settings,size_t(keys.offset)+12,capacity)||count<1||count>16||capacity<count||!Range(data,24)){
-        if(logger)logger(L"Console unavailable: no configured engine console FKey.");return;
+        consoleToggleSupported=false;if(logger)logger(L"Console unavailable: no configured engine console FKey; original console key remains available.");return;
     }
     struct Key {uint32_t name,number;void* details;void* control;};static_assert(sizeof(Key)==24);
     Key key{};std::memcpy(&key,data,sizeof(key));

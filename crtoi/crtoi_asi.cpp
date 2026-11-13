@@ -767,6 +767,10 @@ LRESULT CALLBACK WindowProc(HWND wnd,UINT msg,WPARAM wp,LPARAM lp){
         (g_consoleVK.load()?int(wp)==g_consoleVK.load():scan==unsigned(g_consoleScan.load()))&&
         (GetKeyState(VK_MENU)&0x8000)==0&&(GetKeyState(VK_CONTROL)&0x8000)==0;
     if(msg==WM_CHAR&&GetTickCount64()<g_consoleCharUntil.load()&&scan==g_consoleLastScan.load())return 0;
+    if(consoleKey&&g_captureHotkey.load()==0&&!crtoi::nativebridge::ConsoleToggleReady()){
+        if(msg==WM_KEYDOWN||msg==WM_SYSKEYDOWN){g_menuOpen=false;StopFly(L"Freecam stopped for console key.");}
+        return g_previousWndProc?CallWindowProcW(g_previousWndProc,wnd,msg,wp,lp):DefWindowProcW(wnd,msg,wp,lp);
+    }
     if(consoleKey&&g_captureHotkey.load()==0&&crtoi::nativebridge::ConsoleToggleReady()){
         if((msg==WM_KEYDOWN||msg==WM_SYSKEYDOWN)&&!(lp&(1LL<<30))){
             g_menuOpen=false;StopFly(L"Freecam stopped for console.");
