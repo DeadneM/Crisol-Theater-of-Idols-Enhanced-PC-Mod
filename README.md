@@ -2,6 +2,12 @@
 
 Independent x64 ASI mod for **Crisol: Theater of Idols**. Built around an in-game Dear ImGui menu and a DXGI ASI loader.
 
+## V0.10C F5 save / F8 load / console-key routing
+
+F4 is free again; Alt+F4 remains passed to the game. F5 invokes native AutoSave, backs up the previous file and stores a byte-verified dedicated snapshot outside SaveGames. F8 backs up the current AutoSave, stages that last F5 snapshot and calls native CRLoadGame(world,0). Native automatic checkpoints do not overwrite the separate quick snapshot. Load/snapshot behavior still requires gameplay confirmation; no manual slot is targeted. Mod overlay closes and forwards the configured console key directly to the game.
+
+The FullAim-only sight experiment is REJECTED after the user's no-effect report and no longer runs/is offered. True per-weapon sight alignment remains unresolved; do not label flag changes as iron sights. Existing personal INI remains untouched, including the obsolete experimental key, which is ignored.
+
 ## V0.10B save/input fixes and opt-in sight experiment
 
 Base: V0.9I accepted behavior plus V0.10A native quick-save infrastructure. V0.10A F4 was refused before the native call; Alt+F4 was swallowed. V0.10B forwards Alt+F4 before all mod input handlers and removes the overbroad cinematic-mode save veto, keeping the working camera heartbeat, cursor checks, native save guards and verified backup.

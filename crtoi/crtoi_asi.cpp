@@ -145,7 +145,6 @@ void SaveSettings(){
     WritePrivateProfileStringW(L"Camera",L"WorldFOVEnabled",g_worldEnabled.load()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"FPSFOVEnabled",g_fpsEnabled.load()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"AutoCaptureGameplay",g_autoCamera.load()?L"1":L"0",g_ini.c_str());
-    WritePrivateProfileStringW(L"Camera",L"ExperimentalIronSights",crtoi::nativebridge::IronSightsEnabled()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Hub",L"AllowCompletedChapterReentry",crtoi::hub::Enabled()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Startup",L"SkipIntroVideos",g_skipStartupVideos.load()?L"1":L"0",g_ini.c_str());
     swprintf_s(v,L"%d",g_fpsFov.load());WritePrivateProfileStringW(L"Camera",L"FPSFOV",v,g_ini.c_str());
@@ -170,12 +169,11 @@ void InitPathAndSettings(){
     g_sniperFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"SniperFOV",30,g_ini.c_str())),20,130);
     g_worldEnabled=GetPrivateProfileIntW(L"Camera",L"WorldFOVEnabled",1,g_ini.c_str())!=0;
     g_fpsEnabled=GetPrivateProfileIntW(L"Camera",L"FPSFOVEnabled",1,g_ini.c_str())!=0;
-    crtoi::nativebridge::SetIronSightsEnabled(GetPrivateProfileIntW(L"Camera",L"ExperimentalIronSights",0,g_ini.c_str())!=0);
     g_autoCamera=GetPrivateProfileIntW(L"Camera",L"AutoCaptureGameplay",1,g_ini.c_str())!=0;
     crtoi::hub::SetEnabled(GetPrivateProfileIntW(L"Hub",L"AllowCompletedChapterReentry",1,g_ini.c_str())!=0);
     g_skipStartupVideos=GetPrivateProfileIntW(L"Startup",L"SkipIntroVideos",1,g_ini.c_str())!=0;
     g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",105,g_ini.c_str())),60,130);
-    Log(L"CRToi V0.10B TEST: Alt+F4 passthrough, corrected F4 gates, opt-in iron-sight test; V0.9I behavior retained. Original V0.9B hub reentry restored at user request.");
+    Log(L"CRToi V0.10C TEST: F5 quick save / F8 native quick load; console-key passthrough; rejected sight experiment disabled; V0.9I behavior retained. Original V0.9B hub reentry restored at user request.");
 }
 // Suppress ONLY the three documented startup MP4 files in Crisol's
 // Content/Movies directory while the game is initializing. This avoids
@@ -648,7 +646,6 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
     }
     if(!g_flyActive.load()&&ownerActor){
         crtoi::nativebridge::MarkGameplayForSave(ownerActor);
-        crtoi::nativebridge::MarkIronSightAim(ownerActor,aiming);
     }
     HandleFlyCamera(camera,view,aiming);
     if(g_blendCamera!=ptr||!g_blendTick||now-g_blendTick>250){
@@ -737,11 +734,18 @@ LRESULT CALLBACK WindowProc(HWND wnd,UINT msg,WPARAM wp,LPARAM lp){
     // Forward Alt+F4 before hotkey capture, quick save or ImGui consumes input.
     if(crtoi::hotkeys::PassSystemClose(msg,wp,lp,(GetKeyState(VK_MENU)&0x8000)!=0))
         return g_previousWndProc?CallWindowProcW(g_previousWndProc,wnd,msg,wp,lp):DefWindowProcW(wnd,msg,wp,lp);
+    const bool consoleKey=(msg==WM_KEYDOWN||msg==WM_KEYUP||msg==WM_SYSKEYDOWN||msg==WM_SYSKEYUP)&&
+        (((static_cast<unsigned long long>(lp)>>16)&0xff)==unsigned(g_consoleScan.load()))&&
+        (GetKeyState(VK_MENU)&0x8000)==0&&(GetKeyState(VK_CONTROL)&0x8000)==0;
+    if(consoleKey&&g_captureHotkey.load()==0){
+        if(msg==WM_KEYDOWN||msg==WM_SYSKEYDOWN){g_menuOpen=false;StopFly(L"Freecam stopped for console key.");Log(L"Console key forwarded to the game; mod menu closed.");}
+        return g_previousWndProc?CallWindowProcW(g_previousWndProc,wnd,msg,wp,lp):DefWindowProcW(wnd,msg,wp,lp);
+    }
     if(msg==WM_KEYDOWN || msg==WM_SYSKEYDOWN){
         if(!(lp & (1LL<<30))){
             const int capture=g_captureHotkey.exchange(0);
             if(capture) {
-                if(wp==VK_F4){g_captureHotkey=capture;Log(L"F4 is reserved for quick save; choose another key.");return 0;}
+                if(wp==VK_F5||wp==VK_F8){g_captureHotkey=capture;Log(L"F5/F8 are reserved for quick save/load; choose another key.");return 0;}
                 if(wp!=VK_ESCAPE) {
                     if(capture==1){
                         if(int(wp)!=g_cheatShopVK.load()&&int(wp)!=g_flyVK.load()&&
@@ -762,11 +766,18 @@ LRESULT CALLBACK WindowProc(HWND wnd,UINT msg,WPARAM wp,LPARAM lp){
                 }
                 return 0;
             }
-            if(wp==VK_F4){
-                if(g_flyActive.load())Log(L"F4 refused while freecam is active.");
+            const auto quick=crtoi::hotkeys::GetQuickAction(msg,wp,lp,(GetKeyState(VK_MENU)&0x8000)!=0,
+                (GetKeyState(VK_CONTROL)&0x8000)!=0,(GetKeyState(VK_SHIFT)&0x8000)!=0);
+            if(quick==crtoi::hotkeys::QuickAction::Load){
+                StopFly(L"Freecam stopped before F8 quick load.");g_menuOpen=false;
+                if(!crtoi::nativebridge::QueueQuickLoad(g_gameHwnd))Log(L"F8 quick load unavailable or already queued.");
+                return 0;
+            }
+            if(quick==crtoi::hotkeys::QuickAction::Save){
+                if(g_flyActive.load())Log(L"F5 refused while freecam is active.");
                 else {
                     g_menuOpen=false;
-                    if(!crtoi::nativebridge::QueueQuickSave(g_gameHwnd))Log(L"F4 quick save unavailable or already queued.");
+                    if(!crtoi::nativebridge::QueueQuickSave(g_gameHwnd))Log(L"F5 quick save unavailable or already queued.");
                 }
                 return 0;
             }
@@ -824,10 +835,10 @@ void DrawMenu(){
     layout::StyleScope style;
     ImGui::SetNextWindowSize(ImVec2(720,555),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(520,370),ImVec2(1300,1020));
-    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.10B NATIVE SHOP + CAMERA TEST",
+    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.10C NATIVE SHOP + CAMERA TEST",
         &open,ImGuiWindowFlags_NoCollapse)){
         ImGui::TextColored(ImVec4(.52f,.83f,1.f,1.f),"CRISOL ENHANCED PC MOD");
-        ImGui::SameLine();ImGui::TextDisabled("V0.10B | NATIVE SHOP + CAMERA");
+        ImGui::SameLine();ImGui::TextDisabled("V0.10C | NATIVE SHOP + CAMERA");
         ImGui::Separator();ImGui::Spacing();
         ImGui::SetNextItemOpen(false,ImGuiCond_Once);
         if(layout::Group("Camera / Gameplay ownership")){
@@ -988,22 +999,16 @@ void DrawMenu(){
             if(crtoi::nativebridge::ShopPending())ImGui::TextDisabled("Waiting for the game to handle your request...");
         }
         ImGui::SetNextItemOpen(false,ImGuiCond_Once);
-        if(layout::Group("Aiming / Iron sights (TEST)")){
-            bool iron=crtoi::nativebridge::IronSightsEnabled();
-            if(ImGui::Checkbox("Experimental iron-sight alignment",&iron)){
-                crtoi::nativebridge::SetIronSightsEnabled(iron);SaveSettings();
-            }
-            ImGui::TextWrapped("Off by default. Non-sniper weapons only. Verify the front and rear sights actually line up; the normal sniper is preserved.");
-            if(!crtoi::nativebridge::IronSightsReady())ImGui::TextDisabled("Unavailable for this game build.");
-        }
-        ImGui::SetNextItemOpen(false,ImGuiCond_Once);
-        if(layout::Group("Quick save / F4")){
-            ImGui::TextWrapped("F4 requests the game's AutoSave slot. Existing manual slots are not targeted. The previous autosave is copied and verified first.");
+        if(layout::Group("Quick save / load (F5 / F8)")){
+            ImGui::TextWrapped("F5 saves through the game and keeps a separate quick snapshot. F8 loads the last successful F5 snapshot. Previous AutoSave files are backed up; manual slots are not targeted.");
             ImGui::TextWrapped("%s",crtoi::nativebridge::QuickSaveStatus());
             if(!crtoi::nativebridge::QuickSaveReady())ImGui::TextDisabled("Unavailable for this game build.");
-            else if(ImGui::Button("Quick save now (F4)")){
+            else if(ImGui::Button("Quick save now (F5)")){
                 g_menuOpen=false;
                 crtoi::nativebridge::QueueQuickSave(g_gameHwnd);
+            }
+            if(crtoi::nativebridge::QuickLoadReady()&&ImGui::Button("Quick load (F8)")){
+                g_menuOpen=false;StopFly(L"Freecam stopped for quick load.");crtoi::nativebridge::QueueQuickLoad(g_gameHwnd);
             }
         }
         ImGui::SetNextItemOpen(false,ImGuiCond_Once);

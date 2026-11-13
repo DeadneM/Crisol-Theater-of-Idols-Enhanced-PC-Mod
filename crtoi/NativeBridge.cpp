@@ -19,18 +19,14 @@ namespace crtoi::nativebridge {
 namespace {
 Logger logger=nullptr;
 uintptr_t image=0;
-std::atomic_bool quickSupported{false},ironSupported{false},ironEnabled{false};
-std::atomic<void*> ironOwner{nullptr};
-std::atomic_bool ironAiming{false};
-std::atomic_uint64_t ironSeenAt{0};
-void* forcedManager=nullptr;void* forcedWeapon=nullptr;
-
-std::atomic_uint64_t quickAt{0},playableAt{0},quickStatusAt{0};
+std::atomic_bool quickSupported{false},loadSupported{false};
+std::atomic_uint64_t quickAt{0},loadAt{0},playableAt{0},quickStatusAt{0};
 std::atomic<void*> playableOwner{nullptr};
-std::atomic<HWND> quickWindow{nullptr};
-enum class QuickStatus {Idle,Queued,Unavailable,BackupFailed,Requested,Written,NoWrite,Busy};
+std::atomic<HWND> quickWindow{nullptr},loadWindow{nullptr};
+enum class QuickStatus {Idle,Queued,Unavailable,BackupFailed,Requested,Written,NoWrite,Busy,SnapshotFailed,LoadQueued,LoadRequested,LoadUnavailable};
 std::atomic<QuickStatus> quickStatus{QuickStatus::Idle};
-std::wstring autoSavePath;
+std::wstring autoSavePath,quickSnapshotPath,backupRoot;
+uint64_t lastLoadAttempt=0;
 WIN32_FILE_ATTRIBUTE_DATA beforeSave{};
 uint64_t checkingSaveAt=0,lastQuickAttempt=0;
 void SetQuickStatus(QuickStatus value,const wchar_t* message){
@@ -350,23 +346,43 @@ bool SameCopy(const std::wstring& a,const std::wstring& b) {
     }while(ok&&nx);
     CloseHandle(first);CloseHandle(second);return ok;
 }
-bool BackupAutoSave() {
+bool ResolveSavePaths(){
     PWSTR local=nullptr;
     if(FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData,0,nullptr,&local)))return false;
     std::wstring saved=std::wstring(local)+L"\\CRToiPrototype\\Saved";CoTaskMemFree(local);
     autoSavePath=saved+L"\\SaveGames\\AutoSave.sav";
+    quickSnapshotPath=saved+L"\\CRToiEnhancedQuickSave\\QuickSave.sav";
+    backupRoot=saved+L"\\CRToiEnhancedBackups";return true;
+}
+std::wstring BackupName(const wchar_t* prefix,const wchar_t* key){
+    SYSTEMTIME time{};GetLocalTime(&time);wchar_t name[150]{};
+    swprintf_s(name,L"\\%ls_before_%ls_%04u%02u%02u_%02u%02u%02u_%03u.sav",prefix,key,
+        time.wYear,time.wMonth,time.wDay,time.wHour,time.wMinute,time.wSecond,time.wMilliseconds);
+    return backupRoot+name;
+}
+bool BackupAutoSave(const wchar_t* key=L"F5") {
+    if(!ResolveSavePaths())return false;
     beforeSave={};
     if(!GetFileAttributesExW(autoSavePath.c_str(),GetFileExInfoStandard,&beforeSave))
         return GetLastError()==ERROR_FILE_NOT_FOUND;
-    const std::wstring root=saved+L"\\CRToiEnhancedBackups";
-    if(!CreateDirectoryW(root.c_str(),nullptr)&&GetLastError()!=ERROR_ALREADY_EXISTS)return false;
-    SYSTEMTIME time{};GetLocalTime(&time);wchar_t name[100]{};
-    swprintf_s(name,L"\\AutoSave_before_F4_%04u%02u%02u_%02u%02u%02u_%03u.sav",
-        time.wYear,time.wMonth,time.wDay,time.wHour,time.wMinute,time.wSecond,time.wMilliseconds);
-    const std::wstring destination=root+name;
+    if(!CreateDirectoryW(backupRoot.c_str(),nullptr)&&GetLastError()!=ERROR_ALREADY_EXISTS)return false;
+    const std::wstring destination=BackupName(L"AutoSave",key);
     if(!CopyFileW(autoSavePath.c_str(),destination.c_str(),TRUE)||!SameCopy(autoSavePath,destination))return false;
-    if(logger)logger((L"F4 previous autosave copied and byte-verified: "+destination).c_str());
+    if(logger)logger((std::wstring(key)+L" previous autosave copied and byte-verified: "+destination).c_str());
     return true;
+}
+bool StoreQuickSnapshot(){
+    if(!ResolveSavePaths())return false;
+    const std::wstring directory=quickSnapshotPath.substr(0,quickSnapshotPath.find_last_of(L"\\"));
+    if(!CreateDirectoryW(directory.c_str(),nullptr)&&GetLastError()!=ERROR_ALREADY_EXISTS)return false;
+    if(GetFileAttributesW(quickSnapshotPath.c_str())!=INVALID_FILE_ATTRIBUTES){
+        if(!CreateDirectoryW(backupRoot.c_str(),nullptr)&&GetLastError()!=ERROR_ALREADY_EXISTS)return false;
+        const auto previous=BackupName(L"QuickSave",L"F5");
+        if(!CopyFileW(quickSnapshotPath.c_str(),previous.c_str(),TRUE)||!SameCopy(quickSnapshotPath,previous))return false;
+    }
+    const auto temporary=quickSnapshotPath+L".pending";
+    return CopyFileW(autoSavePath.c_str(),temporary.c_str(),FALSE)&&SameCopy(autoSavePath,temporary)&&
+        MoveFileExW(temporary.c_str(),quickSnapshotPath.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH);
 }
 void ServiceQuickSave(void* world) {
     const uint64_t now=GetTickCount64();
@@ -376,29 +392,31 @@ void ServiceQuickSave(void* world) {
            (after.nFileSizeHigh||after.nFileSizeLow>64)&&
            (CompareFileTime(&after.ftLastWriteTime,&beforeSave.ftLastWriteTime)!=0||
             after.nFileSizeLow!=beforeSave.nFileSizeLow||after.nFileSizeHigh!=beforeSave.nFileSizeHigh)) {
-            checkingSaveAt=0;SetQuickStatus(QuickStatus::Written,L"F4: native AutoSave file updated. Reload validation is still required.");
-        }else if(now-checkingSaveAt>10000){checkingSaveAt=0;SetQuickStatus(QuickStatus::NoWrite,L"F4: no AutoSave file update detected; game may have refused the native request.");}
+            checkingSaveAt=0;
+            if(StoreQuickSnapshot())SetQuickStatus(QuickStatus::Written,L"F5: native AutoSave updated and separate quick snapshot byte-verified. F8 can load it.");
+            else SetQuickStatus(QuickStatus::SnapshotFailed,L"F5: AutoSave changed, but quick snapshot failed; prior snapshot retained.");
+        }else if(now-checkingSaveAt>10000){checkingSaveAt=0;SetQuickStatus(QuickStatus::NoWrite,L"F5: no AutoSave file update detected; game may have refused the native request.");}
     }
     uint64_t requested=quickAt.load();if(!requested)return;
     if(!quickAt.compare_exchange_strong(requested,0))return;
     if(checkingSaveAt||(lastQuickAttempt&&now-lastQuickAttempt<3000)){
-        SetQuickStatus(QuickStatus::Busy,L"F4: save already pending or cooldown active.");return;
+        SetQuickStatus(QuickStatus::Busy,L"F5: save already pending or cooldown active.");return;
     }
     void* owner=playableOwner.load();void* controller=nullptr;
     bool cursor=true;
     if(now-requested>1500||now-playableAt.load()>500||!LiveObject(owner)||
        GetForegroundWindow()!=quickWindow.load()||!LiveObject(world)||!OnGameThread()){
-        SetQuickStatus(QuickStatus::Unavailable,L"F4 refused: no recent active captured gameplay camera.");return;
+        SetQuickStatus(QuickStatus::Unavailable,L"F5 refused: no recent active captured gameplay camera.");return;
     }
     controller=reinterpret_cast<FirstControllerFn>(image+0x3FA9D70)(world);
     if(!LiveObject(controller)){
-        SetQuickStatus(QuickStatus::Unavailable,L"F4 refused: local controller unavailable.");return;
+        SetQuickStatus(QuickStatus::Unavailable,L"F5 refused: local controller unavailable.");return;
     }
     if(!ControllerCursor(controller,cursor)){
-        SetQuickStatus(QuickStatus::Unavailable,L"F4 refused: controller cursor schema unavailable.");return;
+        SetQuickStatus(QuickStatus::Unavailable,L"F5 refused: controller cursor schema unavailable.");return;
     }
     if(cursor){
-        SetQuickStatus(QuickStatus::Unavailable,L"F4 refused: a cursor/menu is active.");return;
+        SetQuickStatus(QuickStatus::Unavailable,L"F5 refused: a cursor/menu is active.");return;
     }
     // bCinematicMode proved too broad in user gameplay. Do not use it as an
     // absolute veto; the working camera heartbeat and native AutoSave guards apply.
@@ -407,52 +425,53 @@ void ServiceQuickSave(void* world) {
     void* manager=reinterpret_cast<ManagerFn>(image+0x4DD2FF0)(world);
     void* context=nullptr;
     if(!LiveObject(manager)||!Read(manager,0x28,context)||!LiveObject(context)){
-        SetQuickStatus(QuickStatus::Unavailable,L"F4 refused: native save manager unavailable.");return;
+        SetQuickStatus(QuickStatus::Unavailable,L"F5 refused: native save manager unavailable.");return;
     }
     if(!BackupAutoSave()){
-        SetQuickStatus(QuickStatus::BackupFailed,L"F4 cancelled: previous autosave backup could not be verified. No native save called.");return;
+        SetQuickStatus(QuickStatus::BackupFailed,L"F5 cancelled: previous autosave backup could not be verified. No native save called.");return;
     }
     lastQuickAttempt=now;
-    SetQuickStatus(QuickStatus::Requested,L"F4: invoking the native AutoSave path (slot 0); manual slots are not targeted.");
+    SetQuickStatus(QuickStatus::Requested,L"F5: invoking the native AutoSave path (slot 0); manual slots are not targeted.");
     reinterpret_cast<AutoSaveFn>(image+0x4D87040)(manager);
     checkingSaveAt=GetTickCount64();
 }
-bool IronContext(void* manager,void*& weapon,uint8_t& full) {
-    void* animation=nullptr;void* owner=nullptr;uint8_t force=0;
-    return LiveObject(manager)&&Read(manager,0xd8,weapon)&&LiveObject(weapon)&&
-        DerivedFrom(weapon,"CRWeaponFirePlayerBase")&&
-        !DerivedFrom(weapon,"CRDivineSniper_BP_C")&&
-        Read(manager,0x100,animation)&&LiveObject(animation)&&
-        Read(manager,0xe8,owner)&&LiveObject(owner)&&
-        Read(manager,0x190,full)&&full<=1&&Read(manager,0x191,force)&&force==0;
-}
-void ReleaseIronSight(){
-    if(!forcedManager)return;
-    void* current=nullptr;uint8_t full=0;
-    if(IronContext(forcedManager,current,full)&&current==forcedWeapon&&full){
-        using SetFullFn=void(__fastcall*)(void*,bool);
-        reinterpret_cast<SetFullFn>(image+0x4D68EF0)(forcedManager,false);
-        if(logger)logger(L"Iron-sight TEST: native full-aim release dispatched.");
+void ServiceQuickLoad(void* world){
+    uint64_t requested=loadAt.load();if(!requested)return;
+    const uint64_t now=GetTickCount64();
+    if(checkingSaveAt||quickAt.load())return; // never overwrite a pending save
+    if(!loadAt.compare_exchange_strong(requested,0))return;
+    if(!OnGameThread()||!LiveObject(world)||now-requested>15000||
+       GetForegroundWindow()!=loadWindow.load()||(lastLoadAttempt&&now-lastLoadAttempt<5000)){
+        SetQuickStatus(QuickStatus::LoadUnavailable,L"F8 refused: foreground/game-thread check or load cooldown.");return;
     }
-    forcedManager=nullptr;forcedWeapon=nullptr;
-}
-void ServiceIronSights(){
-    if(!ironSupported.load()||!OnGameThread())return;
-    const bool requested=ironEnabled.load()&&ironAiming.load()&&GetTickCount64()-ironSeenAt.load()<300;
-    if(!requested){ReleaseIronSight();return;}
-    void* owner=ironOwner.load();void* manager=nullptr;void* weapon=nullptr;uint8_t full=0;
-    if(!LiveObject(owner)||!Read(owner,0xB60,manager)||!IronContext(manager,weapon,full)){
-        ReleaseIronSight();return;
+    void* controller=reinterpret_cast<FirstControllerFn>(image+0x3FA9D70)(world);bool cursor=true;
+    if(!LiveObject(controller)||!ControllerCursor(controller,cursor)||cursor){
+        SetQuickStatus(QuickStatus::LoadUnavailable,L"F8 refused: game controller unavailable or menu active.");return;
     }
-    if(forcedManager&&(forcedManager!=manager||forcedWeapon!=weapon))ReleaseIronSight();
-    if(forcedManager||full)return;
-    using SetFullFn=void(__fastcall*)(void*,bool);
-    reinterpret_cast<SetFullFn>(image+0x4D68EF0)(manager,true);
-    uint8_t after=0;
-    if(Read(manager,0x190,after)&&after==1){
-        forcedManager=manager;forcedWeapon=weapon;
-        if(logger)logger(L"Iron-sight TEST: native full-aim transition requested for non-sniper. Actual sight alignment still requires visual verification.");
+    using ManagerFn=void*(__fastcall*)(const void*);
+    void* manager=reinterpret_cast<ManagerFn>(image+0x4DD2FF0)(world);void* instance=nullptr;uint8_t loading=1;
+    if(!LiveObject(manager)||!Read(manager,0x28,instance)||!LiveObject(instance)||
+       !Read(instance,0xEC8,loading)||loading){
+        SetQuickStatus(QuickStatus::LoadUnavailable,L"F8 refused: native game instance unavailable or already loading.");return;
     }
+    WIN32_FILE_ATTRIBUTE_DATA snapshot{};
+    if(!ResolveSavePaths()||!GetFileAttributesExW(quickSnapshotPath.c_str(),GetFileExInfoStandard,&snapshot)||
+       (!snapshot.nFileSizeHigh&&snapshot.nFileSizeLow<=64)){
+        SetQuickStatus(QuickStatus::LoadUnavailable,L"F8: no verified F5 snapshot exists yet. Save with F5 first.");return;
+    }
+    if(!BackupAutoSave(L"F8")){
+        SetQuickStatus(QuickStatus::BackupFailed,L"F8 cancelled: current AutoSave backup failed.");return;
+    }
+    const auto temporary=autoSavePath+L".CRToi-F8.pending";
+    if(!CopyFileW(quickSnapshotPath.c_str(),temporary.c_str(),FALSE)||!SameCopy(quickSnapshotPath,temporary)||
+       !MoveFileExW(temporary.c_str(),autoSavePath.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)){
+        SetQuickStatus(QuickStatus::LoadUnavailable,L"F8 cancelled: snapshot staging failed; no native load called.");return;
+    }
+    lastLoadAttempt=now;playableAt=0;
+    using LoadFn=void(__fastcall*)(const void*,int);
+    SetQuickStatus(QuickStatus::LoadRequested,L"F8: calling native CRLoadGame(world,0) for the verified F5 snapshot. Actual reload awaits gameplay confirmation.");
+    reinterpret_cast<LoadFn>(image+0x4DC7EC0)(world,0);
+    // Do not dereference actors/world after native level travel begins.
 }
 void __fastcall HookWorldTick(void* world,int tickType,float delta) {
     thread_local bool busy=false;
@@ -462,7 +481,7 @@ void __fastcall HookWorldTick(void* world,int tickType,float delta) {
 
     if(outer&&consoleSupported.load())Service(world);
     if(outer&&quickSupported.load()&&OnGameThread())ServiceQuickSave(world);
-    if(outer&&ironSupported.load())ServiceIronSights();
+    if(outer&&loadSupported.load()&&OnGameThread())ServiceQuickLoad(world);
     if(outer)busy=false;
 }
 }
@@ -521,10 +540,13 @@ void Initialize(Logger log) {
         std::memcmp(reinterpret_cast<void*>(image+0x4D870C4),slotZero,sizeof(slotZero))==0&&
         std::memcmp(reinterpret_cast<void*>(image+0x4DB0F00),saveBody,sizeof(saveBody))==0&&
         std::memcmp(reinterpret_cast<void*>(image+0x4CCD185),wrapperJump,sizeof(wrapperJump))==0;
-    constexpr uint8_t fullAim[]={0x40,0x53,0x55,0x57,0x48,0x83,0xec,0x50,0x33,0xff,0x0f,0xb6,0xea};
-    // Native bool setter uses RCX=manager, DL=state; leaves ForceFullyAim/timers alone.
-    ironSupported=weaponSupported.load()&&
-        std::memcmp(reinterpret_cast<void*>(image+0x4D68EF0),fullAim,sizeof(fullAim))==0;
+    constexpr uint8_t loadCall[]={0xe8,0x44,0x7e,0x13,0x00};
+    constexpr uint8_t loadBody[]={0x48,0x89,0x5c,0x24,0x08,0x57,0x48,0x83,0xec,0x20,0x8b,0xfa};
+    constexpr uint8_t loadFlag[]={0x0f,0xb6,0x81,0xc8,0x0e,0x00,0x00};
+    loadSupported=quickSupported.load()&&
+        std::memcmp(reinterpret_cast<void*>(image+0x4C90077),loadCall,sizeof(loadCall))==0&&
+        std::memcmp(reinterpret_cast<void*>(image+0x4DC7EC0),loadBody,sizeof(loadBody))==0&&
+        std::memcmp(reinterpret_cast<void*>(image+0x4C9B335),loadFlag,sizeof(loadFlag))==0;
     consoleSupported=true;
     if(logger)logger(L"V0.9C native console queue ready. Explicit F1/menu requests only; game-thread gate; no input simulation or door/progression hook.");
 }
@@ -539,18 +561,22 @@ bool QueueShop(HWND window) {
     if(!pendingAt.compare_exchange_strong(expected,GetTickCount64()))return false;
     ++requests;return true;
 }
-bool IronSightsReady(){return ironSupported.load();}
-bool IronSightsEnabled(){return ironEnabled.load();}
-void SetIronSightsEnabled(bool enabled){ironEnabled=enabled;}
-void MarkIronSightAim(void* owner,bool aiming){ironOwner=owner;ironAiming=aiming;ironSeenAt=GetTickCount64();}
 bool QuickSaveReady(){return quickSupported.load();}
 void MarkGameplayForSave(void* owner){playableOwner=owner;playableAt=GetTickCount64();}
 bool QueueQuickSave(HWND window) {
-    if(!quickSupported.load()||!window||GetForegroundWindow()!=window)return false;
+    if(!quickSupported.load()||loadAt.load()||!window||GetForegroundWindow()!=window)return false;
     DWORD process=0;GetWindowThreadProcessId(window,&process);if(process!=GetCurrentProcessId())return false;
     uint64_t expected=0;quickWindow=window;
     if(!quickAt.compare_exchange_strong(expected,GetTickCount64()))return false;
-    SetQuickStatus(QuickStatus::Queued,L"F4: explicit quick-save request queued.");return true;
+    SetQuickStatus(QuickStatus::Queued,L"F5: explicit quick-save request queued.");return true;
+}
+bool QuickLoadReady(){return loadSupported.load();}
+bool QueueQuickLoad(HWND window){
+    if(!loadSupported.load()||!window||GetForegroundWindow()!=window)return false;
+    DWORD process=0;GetWindowThreadProcessId(window,&process);if(process!=GetCurrentProcessId())return false;
+    uint64_t expected=0;loadWindow=window;
+    if(!loadAt.compare_exchange_strong(expected,GetTickCount64()))return false;
+    SetQuickStatus(QuickStatus::LoadQueued,L"F8: explicit quick-load request queued.");return true;
 }
 const char* QuickSaveStatus(){
     switch(quickStatus.load()){
@@ -558,10 +584,14 @@ const char* QuickSaveStatus(){
     case QuickStatus::Unavailable:return "Quick save unavailable here (gameplay required).";
     case QuickStatus::BackupFailed:return "Quick save cancelled: backup failed.";
     case QuickStatus::Requested:return "Saving through the game's autosave...";
-    case QuickStatus::Written:return "Autosave file updated.";
+    case QuickStatus::Written:return "Quick save stored (F5). F8 loads this snapshot.";
+    case QuickStatus::SnapshotFailed:return "AutoSave updated, but quick snapshot failed.";
+    case QuickStatus::LoadQueued:return "Quick load queued...";
+    case QuickStatus::LoadRequested:return "Loading the F5 quick save...";
+    case QuickStatus::LoadUnavailable:return "Quick load unavailable; check F5 save and game state.";
     case QuickStatus::NoWrite:return "No autosave update detected.";
     case QuickStatus::Busy:return "Save already pending; please wait.";
-    default:return "F4 saves to the game's AutoSave slot.";
+    default:return "F5 saves; F8 loads the last F5 snapshot.";
     }
 }
 ULONGLONG QuickSaveStatusAt(){return quickStatusAt.load();}

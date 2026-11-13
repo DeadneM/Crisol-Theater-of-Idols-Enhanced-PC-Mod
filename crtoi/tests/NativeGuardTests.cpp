@@ -9,10 +9,9 @@ int main() {
     Initialize(&Log);
     if(Ready()||ConsoleReady()||!logged)return 1;
     if(PlayerCameraControllable(reinterpret_cast<void*>(1)))return 5;
-    SetIronSightsEnabled(true);MarkIronSightAim(reinterpret_cast<void*>(1),true);
-    if(IronSightsReady())return 8;
     MarkGameplayForSave(reinterpret_cast<void*>(1));
     if(QuickSaveReady()||QueueQuickSave(reinterpret_cast<HWND>(1)))return 7;
+    if(QuickLoadReady()||QueueQuickLoad(reinterpret_cast<HWND>(1)))return 9;
     bool sniper=false,scope=false;
     if(PlayerWeaponState(reinterpret_cast<void*>(1),sniper,scope)||ShopCloseReady())return 6;
     bool cinematic=false;
