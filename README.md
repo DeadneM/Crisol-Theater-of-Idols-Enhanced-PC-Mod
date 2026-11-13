@@ -2,6 +2,12 @@
 
 Independent x64 ASI mod for **Crisol: Theater of Idols**. Built around an in-game Dear ImGui menu and a DXGI ASI loader.
 
+## V0.10B save/input fixes and opt-in sight experiment
+
+Base: V0.9I accepted behavior plus V0.10A native quick-save infrastructure. V0.10A F4 was refused before the native call; Alt+F4 was swallowed. V0.10B forwards Alt+F4 before all mod input handlers and removes the overbroad cinematic-mode save veto, keeping the working camera heartbeat, cursor checks, native save guards and verified backup.
+
+Iron-sight experiment is OFF by default (`Camera/ExperimentalIronSights=0`). It requests the game's advanced aim transition on non-sniper weapons only, releases through the same native setter, and leaves the normal sniper untouched. This is not verified sight alignment: test actual front/rear sight alignment, animation recovery and absence of an unwanted scope overlay. Disable if incorrect. FOV/doors/working shop closure are retained.
+
 ## V0.10A F4 native quick save (experimental)
 
 Base V0.9I confirmed by the user. New `dev/v0.10-quicksave-f4` branch adds F4 to the game's AutoSave path, with a byte-verified backup of the preceding AutoSave before invoking the native writer. Manual slots are not targeted. A short notification reports whether the AutoSave file changed; restore correctness still requires a reload test. Backup files are under the game's Saved/CRToiEnhancedBackups directory. Existing FOV, gates, shortcuts, personal INI and collapsed menu behavior are preserved. No F5/quick-load added.

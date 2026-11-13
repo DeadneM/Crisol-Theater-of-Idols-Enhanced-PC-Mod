@@ -14,6 +14,7 @@
 #include "OverlayLayout.h"
 #include "NativeBridge.h"
 #include "FovPolicy.h"
+#include "HotkeyPolicy.h"
 #include "HubReentry.h"
 #include <algorithm>
 #include <atomic>
@@ -144,6 +145,7 @@ void SaveSettings(){
     WritePrivateProfileStringW(L"Camera",L"WorldFOVEnabled",g_worldEnabled.load()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"FPSFOVEnabled",g_fpsEnabled.load()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Camera",L"AutoCaptureGameplay",g_autoCamera.load()?L"1":L"0",g_ini.c_str());
+    WritePrivateProfileStringW(L"Camera",L"ExperimentalIronSights",crtoi::nativebridge::IronSightsEnabled()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Hub",L"AllowCompletedChapterReentry",crtoi::hub::Enabled()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Startup",L"SkipIntroVideos",g_skipStartupVideos.load()?L"1":L"0",g_ini.c_str());
     swprintf_s(v,L"%d",g_fpsFov.load());WritePrivateProfileStringW(L"Camera",L"FPSFOV",v,g_ini.c_str());
@@ -168,11 +170,12 @@ void InitPathAndSettings(){
     g_sniperFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"SniperFOV",30,g_ini.c_str())),20,130);
     g_worldEnabled=GetPrivateProfileIntW(L"Camera",L"WorldFOVEnabled",1,g_ini.c_str())!=0;
     g_fpsEnabled=GetPrivateProfileIntW(L"Camera",L"FPSFOVEnabled",1,g_ini.c_str())!=0;
+    crtoi::nativebridge::SetIronSightsEnabled(GetPrivateProfileIntW(L"Camera",L"ExperimentalIronSights",0,g_ini.c_str())!=0);
     g_autoCamera=GetPrivateProfileIntW(L"Camera",L"AutoCaptureGameplay",1,g_ini.c_str())!=0;
     crtoi::hub::SetEnabled(GetPrivateProfileIntW(L"Hub",L"AllowCompletedChapterReentry",1,g_ini.c_str())!=0);
     g_skipStartupVideos=GetPrivateProfileIntW(L"Startup",L"SkipIntroVideos",1,g_ini.c_str())!=0;
     g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",105,g_ini.c_str())),60,130);
-    Log(L"CRToi V0.10A TEST: F4 native quick save with verified previous-autosave backup; V0.9I behavior retained. Original V0.9B hub reentry restored at user request.");
+    Log(L"CRToi V0.10B TEST: Alt+F4 passthrough, corrected F4 gates, opt-in iron-sight test; V0.9I behavior retained. Original V0.9B hub reentry restored at user request.");
 }
 // Suppress ONLY the three documented startup MP4 files in Crisol's
 // Content/Movies directory while the game is initializing. This avoids
@@ -643,7 +646,10 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
         (firstPerson&&std::abs(baseFPS-g_baselineFps.load())>1.f))){
         ResetFovBlend();++g_scopeBypass;return;
     }
-    if(!g_flyActive.load()&&ownerActor)crtoi::nativebridge::MarkGameplayForSave(ownerActor);
+    if(!g_flyActive.load()&&ownerActor){
+        crtoi::nativebridge::MarkGameplayForSave(ownerActor);
+        crtoi::nativebridge::MarkIronSightAim(ownerActor,aiming);
+    }
     HandleFlyCamera(camera,view,aiming);
     if(g_blendCamera!=ptr||!g_blendTick||now-g_blendTick>250){
         g_blendCamera=ptr;g_blendWorld=baseWorld;g_blendFps=firstPerson?baseFPS:g_baselineFps.load();g_blendTick=now;
@@ -728,6 +734,9 @@ void ResetBuffers(){
     g_d3d11Rtv.Reset();
 }
 LRESULT CALLBACK WindowProc(HWND wnd,UINT msg,WPARAM wp,LPARAM lp){
+    // Forward Alt+F4 before hotkey capture, quick save or ImGui consumes input.
+    if(crtoi::hotkeys::PassSystemClose(msg,wp,lp,(GetKeyState(VK_MENU)&0x8000)!=0))
+        return g_previousWndProc?CallWindowProcW(g_previousWndProc,wnd,msg,wp,lp):DefWindowProcW(wnd,msg,wp,lp);
     if(msg==WM_KEYDOWN || msg==WM_SYSKEYDOWN){
         if(!(lp & (1LL<<30))){
             const int capture=g_captureHotkey.exchange(0);
@@ -815,10 +824,10 @@ void DrawMenu(){
     layout::StyleScope style;
     ImGui::SetNextWindowSize(ImVec2(720,555),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(520,370),ImVec2(1300,1020));
-    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.10A NATIVE SHOP + CAMERA TEST",
+    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.10B NATIVE SHOP + CAMERA TEST",
         &open,ImGuiWindowFlags_NoCollapse)){
         ImGui::TextColored(ImVec4(.52f,.83f,1.f,1.f),"CRISOL ENHANCED PC MOD");
-        ImGui::SameLine();ImGui::TextDisabled("V0.10A | NATIVE SHOP + CAMERA");
+        ImGui::SameLine();ImGui::TextDisabled("V0.10B | NATIVE SHOP + CAMERA");
         ImGui::Separator();ImGui::Spacing();
         ImGui::SetNextItemOpen(false,ImGuiCond_Once);
         if(layout::Group("Camera / Gameplay ownership")){
@@ -977,6 +986,15 @@ void DrawMenu(){
             ImGui::Text("Requests: %u | commands returned: %u | cancelled: %u",crtoi::nativebridge::Requests(),
                 crtoi::nativebridge::Dispatches(),crtoi::nativebridge::Cancellations());
             if(crtoi::nativebridge::ShopPending())ImGui::TextDisabled("Waiting for the game to handle your request...");
+        }
+        ImGui::SetNextItemOpen(false,ImGuiCond_Once);
+        if(layout::Group("Aiming / Iron sights (TEST)")){
+            bool iron=crtoi::nativebridge::IronSightsEnabled();
+            if(ImGui::Checkbox("Experimental iron-sight alignment",&iron)){
+                crtoi::nativebridge::SetIronSightsEnabled(iron);SaveSettings();
+            }
+            ImGui::TextWrapped("Off by default. Non-sniper weapons only. Verify the front and rear sights actually line up; the normal sniper is preserved.");
+            if(!crtoi::nativebridge::IronSightsReady())ImGui::TextDisabled("Unavailable for this game build.");
         }
         ImGui::SetNextItemOpen(false,ImGuiCond_Once);
         if(layout::Group("Quick save / F4")){

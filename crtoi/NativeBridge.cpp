@@ -19,7 +19,12 @@ namespace crtoi::nativebridge {
 namespace {
 Logger logger=nullptr;
 uintptr_t image=0;
-std::atomic_bool quickSupported{false};
+std::atomic_bool quickSupported{false},ironSupported{false},ironEnabled{false};
+std::atomic<void*> ironOwner{nullptr};
+std::atomic_bool ironAiming{false};
+std::atomic_uint64_t ironSeenAt{0};
+void* forcedManager=nullptr;void* forcedWeapon=nullptr;
+
 std::atomic_uint64_t quickAt{0},playableAt{0},quickStatusAt{0};
 std::atomic<void*> playableOwner{nullptr};
 std::atomic<HWND> quickWindow{nullptr};
@@ -380,16 +385,23 @@ void ServiceQuickSave(void* world) {
         SetQuickStatus(QuickStatus::Busy,L"F4: save already pending or cooldown active.");return;
     }
     void* owner=playableOwner.load();void* controller=nullptr;
-    bool cinematic=true,cursor=true;
+    bool cursor=true;
     if(now-requested>1500||now-playableAt.load()>500||!LiveObject(owner)||
        GetForegroundWindow()!=quickWindow.load()||!LiveObject(world)||!OnGameThread()){
         SetQuickStatus(QuickStatus::Unavailable,L"F4 refused: no recent active captured gameplay camera.");return;
     }
     controller=reinterpret_cast<FirstControllerFn>(image+0x3FA9D70)(world);
-    if(!LiveObject(controller)||!ControllerCursor(controller,cursor)||cursor||
-       !ControllerCinematic(controller,cinematic)||cinematic){
-        SetQuickStatus(QuickStatus::Unavailable,L"F4 refused: controller unavailable, menu or cinematic active.");return;
+    if(!LiveObject(controller)){
+        SetQuickStatus(QuickStatus::Unavailable,L"F4 refused: local controller unavailable.");return;
     }
+    if(!ControllerCursor(controller,cursor)){
+        SetQuickStatus(QuickStatus::Unavailable,L"F4 refused: controller cursor schema unavailable.");return;
+    }
+    if(cursor){
+        SetQuickStatus(QuickStatus::Unavailable,L"F4 refused: a cursor/menu is active.");return;
+    }
+    // bCinematicMode proved too broad in user gameplay. Do not use it as an
+    // absolute veto; the working camera heartbeat and native AutoSave guards apply.
     using ManagerFn=void*(__fastcall*)(const void*);
     using AutoSaveFn=void(__fastcall*)(void*);
     void* manager=reinterpret_cast<ManagerFn>(image+0x4DD2FF0)(world);
@@ -405,6 +417,42 @@ void ServiceQuickSave(void* world) {
     reinterpret_cast<AutoSaveFn>(image+0x4D87040)(manager);
     checkingSaveAt=GetTickCount64();
 }
+bool IronContext(void* manager,void*& weapon,uint8_t& full) {
+    void* animation=nullptr;void* owner=nullptr;uint8_t force=0;
+    return LiveObject(manager)&&Read(manager,0xd8,weapon)&&LiveObject(weapon)&&
+        !DerivedFrom(weapon,"CRDivineSniper_BP_C")&&
+        Read(manager,0x100,animation)&&LiveObject(animation)&&
+        Read(manager,0xe8,owner)&&LiveObject(owner)&&
+        Read(manager,0x190,full)&&full<=1&&Read(manager,0x191,force)&&force==0;
+}
+void ReleaseIronSight(){
+    if(!forcedManager)return;
+    void* current=nullptr;uint8_t full=0;
+    if(IronContext(forcedManager,current,full)&&current==forcedWeapon&&full){
+        using SetFullFn=void(__fastcall*)(void*,bool);
+        reinterpret_cast<SetFullFn>(image+0x4D68EF0)(forcedManager,false);
+        if(logger)logger(L"Iron-sight TEST: native full-aim release dispatched.");
+    }
+    forcedManager=nullptr;forcedWeapon=nullptr;
+}
+void ServiceIronSights(){
+    if(!ironSupported.load()||!OnGameThread())return;
+    const bool requested=ironEnabled.load()&&ironAiming.load()&&GetTickCount64()-ironSeenAt.load()<300;
+    if(!requested){ReleaseIronSight();return;}
+    void* owner=ironOwner.load();void* manager=nullptr;void* weapon=nullptr;uint8_t full=0;
+    if(!LiveObject(owner)||!Read(owner,0xB60,manager)||!IronContext(manager,weapon,full)){
+        ReleaseIronSight();return;
+    }
+    if(forcedManager&&(forcedManager!=manager||forcedWeapon!=weapon))ReleaseIronSight();
+    if(forcedManager||full)return;
+    using SetFullFn=void(__fastcall*)(void*,bool);
+    reinterpret_cast<SetFullFn>(image+0x4D68EF0)(manager,true);
+    uint8_t after=0;
+    if(Read(manager,0x190,after)&&after==1){
+        forcedManager=manager;forcedWeapon=weapon;
+        if(logger)logger(L"Iron-sight TEST: native full-aim transition requested for non-sniper. Actual sight alignment still requires visual verification.");
+    }
+}
 void __fastcall HookWorldTick(void* world,int tickType,float delta) {
     thread_local bool busy=false;
     const bool outer=!busy;busy=true;
@@ -413,6 +461,7 @@ void __fastcall HookWorldTick(void* world,int tickType,float delta) {
 
     if(outer&&consoleSupported.load())Service(world);
     if(outer&&quickSupported.load()&&OnGameThread())ServiceQuickSave(world);
+    if(outer&&ironSupported.load())ServiceIronSights();
     if(outer)busy=false;
 }
 }
@@ -471,6 +520,10 @@ void Initialize(Logger log) {
         std::memcmp(reinterpret_cast<void*>(image+0x4D870C4),slotZero,sizeof(slotZero))==0&&
         std::memcmp(reinterpret_cast<void*>(image+0x4DB0F00),saveBody,sizeof(saveBody))==0&&
         std::memcmp(reinterpret_cast<void*>(image+0x4CCD185),wrapperJump,sizeof(wrapperJump))==0;
+    constexpr uint8_t fullAim[]={0x40,0x53,0x55,0x57,0x48,0x83,0xec,0x50,0x33,0xff,0x0f,0xb6,0xea};
+    // Native bool setter uses RCX=manager, DL=state; leaves ForceFullyAim/timers alone.
+    ironSupported=weaponSupported.load()&&
+        std::memcmp(reinterpret_cast<void*>(image+0x4D68EF0),fullAim,sizeof(fullAim))==0;
     consoleSupported=true;
     if(logger)logger(L"V0.9C native console queue ready. Explicit F1/menu requests only; game-thread gate; no input simulation or door/progression hook.");
 }
@@ -485,6 +538,10 @@ bool QueueShop(HWND window) {
     if(!pendingAt.compare_exchange_strong(expected,GetTickCount64()))return false;
     ++requests;return true;
 }
+bool IronSightsReady(){return ironSupported.load();}
+bool IronSightsEnabled(){return ironEnabled.load();}
+void SetIronSightsEnabled(bool enabled){ironEnabled=enabled;}
+void MarkIronSightAim(void* owner,bool aiming){ironOwner=owner;ironAiming=aiming;ironSeenAt=GetTickCount64();}
 bool QuickSaveReady(){return quickSupported.load();}
 void MarkGameplayForSave(void* owner){playableOwner=owner;playableAt=GetTickCount64();}
 bool QueueQuickSave(HWND window) {
