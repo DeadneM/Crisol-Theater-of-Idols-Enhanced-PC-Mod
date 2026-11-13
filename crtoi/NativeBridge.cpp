@@ -420,6 +420,7 @@ void ServiceQuickSave(void* world) {
 bool IronContext(void* manager,void*& weapon,uint8_t& full) {
     void* animation=nullptr;void* owner=nullptr;uint8_t force=0;
     return LiveObject(manager)&&Read(manager,0xd8,weapon)&&LiveObject(weapon)&&
+        DerivedFrom(weapon,"CRWeaponFirePlayerBase")&&
         !DerivedFrom(weapon,"CRDivineSniper_BP_C")&&
         Read(manager,0x100,animation)&&LiveObject(animation)&&
         Read(manager,0xe8,owner)&&LiveObject(owner)&&
