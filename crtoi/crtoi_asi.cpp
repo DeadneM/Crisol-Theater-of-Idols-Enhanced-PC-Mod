@@ -1056,7 +1056,7 @@ void DrawMenu(){
             if(ImGui::Button(g_captureHotkey.load()==8?"Press console key...":"Rebind console key"))g_captureHotkey=8;
             ImGui::SameLine();if(ImGui::Button("Default console key"))TryBind(8,0);
             if(ImGui::Button("Open console")){
-                g_menuOpen=false;open=false;StopFly(L"Freecam stopped for console.");g_consoleOpen=true;
+                g_captureHotkey=0;g_menuOpen=false;open=false;StopFly(L"Freecam stopped for console.");g_consoleOpen=true;
             }
         }
         ImGui::SetNextItemOpen(false,ImGuiCond_Once);
@@ -1175,7 +1175,7 @@ void DrawCommandConsole(){
     if(lines.size()>100)lines.erase(lines.begin(),lines.begin()+int(lines.size()-100));
     bool open=true;ImGui::SetNextWindowSize(ImVec2(760,330),ImGuiCond_FirstUseEver);
     if(ImGui::Begin("Game command console",&open)){
-        ImGui::TextDisabled("Game commands | Esc closes | No operating-system commands");
+        ImGui::TextDisabled("Game commands | Esc closes");
         ImGui::BeginChild("##ConsoleOutput",ImVec2(0,-ImGui::GetFrameHeightWithSpacing()*2),true);
         for(const auto& line:lines)ImGui::TextUnformatted(line.c_str());
         ImGui::EndChild();

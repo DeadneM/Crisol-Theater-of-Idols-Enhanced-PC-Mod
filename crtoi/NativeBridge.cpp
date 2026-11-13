@@ -479,10 +479,13 @@ void ServiceQuickLoad(void* world){
     reinterpret_cast<LoadFn>(image+0x4DC7EC0)(world,0);
     // Do not dereference actors/world after native level travel begins.
 }
-void ServiceConsoleCommand(void* world){
-    uint64_t requested=consoleAt.load();if(!requested)return;
-    if(!consoleAt.compare_exchange_strong(requested,0))return;
-    std::wstring command;{std::lock_guard<std::mutex> lock(commandMutex);command=std::move(queuedCommand);}
+bool ServiceConsoleCommand(void* world){
+    uint64_t requested=0;std::wstring command;
+    {std::lock_guard<std::mutex> lock(commandMutex);
+        requested=consoleAt.load();if(!requested)return false;
+        consoleAt=0;command=std::move(queuedCommand);
+    }
+    bool dispatched=false;
     std::string reply="Command unavailable in the current game state.";
     if(OnGameThread()&&LiveObject(world)&&GetTickCount64()-requested<3000&&GetForegroundWindow()==consoleWindow.load()){
         void* controller=reinterpret_cast<FirstControllerFn>(image+0x3FA9D70)(world);void* table=nullptr;void* target=nullptr;
@@ -490,19 +493,20 @@ void ServiceConsoleCommand(void* world){
            reinterpret_cast<uintptr_t>(target)>=image+0x1000&&reinterpret_cast<uintptr_t>(target)<image+0x7490000&&Range(target,16)){
             const FString input{command.data(),int32_t(command.size()+1),int32_t(command.size()+1)};FString output{};
             reinterpret_cast<ConsoleFn>(target)(controller,&output,&input,true);
-            reply="Command sent.";
+            dispatched=true;reply="Command sent.";
             if(output.data){
                 const int count=output.count>0?std::min(output.count-1,2048):0;
                 if(count>0&&Range(output.data,size_t(count)*2)){
                     const int bytes=WideCharToMultiByte(CP_UTF8,0,output.data,count,nullptr,0,nullptr,nullptr);
                     if(bytes>0){reply.resize(size_t(bytes));WideCharToMultiByte(CP_UTF8,0,output.data,count,reply.data(),bytes,nullptr,nullptr);}
                 }
-                reinterpret_cast<FreeFn>(image+0x112ABC0)(output.data);
+                if(output.data!=input.data)reinterpret_cast<FreeFn>(image+0x112ABC0)(output.data);
             }
             if(logger)logger(L"Mod console: explicit user command dispatched through native ConsoleCommand.");
         }
     }
     {std::lock_guard<std::mutex> lock(commandMutex);commandReply=std::move(reply);++replyVersion;}
+    return dispatched;
 }
 void __fastcall HookWorldTick(void* world,int tickType,float delta) {
     thread_local bool busy=false;
@@ -511,9 +515,10 @@ void __fastcall HookWorldTick(void* world,int tickType,float delta) {
     if(originalTick)originalTick(world,tickType,delta);
 
     if(outer&&consoleSupported.load())Service(world);
-    if(outer&&consoleSupported.load())ServiceConsoleCommand(world);
-    if(outer&&quickSupported.load()&&OnGameThread())ServiceQuickSave(world);
-    if(outer&&loadSupported.load()&&OnGameThread())ServiceQuickLoad(world);
+    const bool commandRan=outer&&consoleSupported.load()&&ServiceConsoleCommand(world);
+    // Commands may start level travel. Defer save/load until the next world tick.
+    if(!commandRan&&outer&&quickSupported.load()&&OnGameThread())ServiceQuickSave(world);
+    if(!commandRan&&outer&&loadSupported.load()&&OnGameThread())ServiceQuickLoad(world);
     if(outer)busy=false;
 }
 }

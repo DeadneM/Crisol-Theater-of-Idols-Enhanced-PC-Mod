@@ -262,3 +262,5 @@ User requires rebindable actions, FOV and quick save/load while mod overlay is o
 Console fallback refinement: if native viewport/class/key schema is absent, disable that experimental console path and always forward the configured physical key before overlay consumption. A refused native path must not swallow the original console shortcut. Guard the queued world pointer before dispatch.
 
 The provisional 3d237da/b659916 builds are superseded, not delivered. Final console takes the direct, already-working native command path through a mod input window because the native toggle is compiled out.
+
+Final console queue review: take pending text under the same mutex as publication; preserve distinct queued commands. After native command dispatch, defer save/load to a following tick because the command may initiate level travel. Do not free an aliased input buffer. Opening console cancels an outstanding binding capture.
