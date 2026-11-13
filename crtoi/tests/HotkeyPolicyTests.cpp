@@ -13,4 +13,6 @@ int main(){
     if(GetQuickAction(WM_KEYDOWN,VK_F5,0,true,false,false)!=QuickAction::None)return 9;
     if(GetQuickAction(WM_KEYDOWN,VK_F8,0,false,true,false)!=QuickAction::None)return 10;
     if(GetQuickAction(WM_KEYDOWN,VK_F5,LPARAM(1)<<30,false,false,false)!=QuickAction::None)return 11;
+    if(GetQuickAction(WM_KEYDOWN,VK_F6,0,false,false,false,VK_F6,VK_F9)!=QuickAction::Save)return 12;
+    if(GetQuickAction(WM_KEYDOWN,VK_F5,0,false,false,false,VK_F6,VK_F9)!=QuickAction::None)return 13;
 }

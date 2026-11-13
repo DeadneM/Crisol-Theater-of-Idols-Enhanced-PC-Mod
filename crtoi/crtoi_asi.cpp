@@ -43,7 +43,10 @@ std::atomic_bool g_menuOpen{false},g_imguiReady{false},g_failed{false};
 std::atomic_bool g_skipStartupVideos{true};
 std::atomic_uint g_introVideoOpensSuppressed{0};
 std::atomic_bool g_introHookWReady{false},g_introHook2Ready{false};
-std::atomic_int g_captureHotkey{0},g_menuVK{VK_HOME},g_consoleScan{0x29};
+std::atomic_int g_captureHotkey{0},g_menuVK{VK_HOME},g_consoleScan{0x29},g_consoleVK{0},g_quickSaveVK{VK_F5},g_quickLoadVK{VK_F8};
+std::atomic_uint64_t g_consoleCharUntil{0};
+std::atomic_uint g_consoleLastScan{0};
+bool g_lastGameplayAim=false;
 std::atomic_int g_cheatShopVK{VK_F1},g_smlConsoleVK{0};
 std::atomic_int g_flyVK{VK_F2},g_teleportVK{VK_F3},g_flySpeed{600};
 std::atomic_bool g_flyActive{false},g_flyNeedsOrigin{true},g_teleportPending{false};
@@ -137,6 +140,9 @@ void SaveSettings(){
     swprintf_s(v,L"%d",g_cheatShopVK.load());WritePrivateProfileStringW(L"Hotkeys",L"CheatShopVirtualKey",v,g_ini.c_str());
     swprintf_s(v,L"%d",g_flyVK.load());WritePrivateProfileStringW(L"Hotkeys",L"FreecamVirtualKey",v,g_ini.c_str());
     swprintf_s(v,L"%d",g_teleportVK.load());WritePrivateProfileStringW(L"Hotkeys",L"TeleportVirtualKey",v,g_ini.c_str());
+    swprintf_s(v,L"%d",g_quickSaveVK.load());WritePrivateProfileStringW(L"Hotkeys",L"QuickSaveVirtualKey",v,g_ini.c_str());
+    swprintf_s(v,L"%d",g_quickLoadVK.load());WritePrivateProfileStringW(L"Hotkeys",L"QuickLoadVirtualKey",v,g_ini.c_str());
+    swprintf_s(v,L"%d",g_consoleVK.load());WritePrivateProfileStringW(L"Hotkeys",L"ConsoleVirtualKey",v,g_ini.c_str());
     swprintf_s(v,L"%d",g_flySpeed.load());WritePrivateProfileStringW(L"Freecam",L"Speed",v,g_ini.c_str());
     swprintf_s(v,L"%d",g_consoleScan.load());WritePrivateProfileStringW(L"Hotkeys",L"DeveloperConsoleScanCode",v,g_ini.c_str());
     swprintf_s(v,L"%d",g_worldFov.load());WritePrivateProfileStringW(L"Camera",L"WorldFOV",v,g_ini.c_str());
@@ -148,6 +154,25 @@ void SaveSettings(){
     WritePrivateProfileStringW(L"Hub",L"AllowCompletedChapterReentry",crtoi::hub::Enabled()?L"1":L"0",g_ini.c_str());
     WritePrivateProfileStringW(L"Startup",L"SkipIntroVideos",g_skipStartupVideos.load()?L"1":L"0",g_ini.c_str());
     swprintf_s(v,L"%d",g_fpsFov.load());WritePrivateProfileStringW(L"Camera",L"FPSFOV",v,g_ini.c_str());
+}
+std::atomic_int* Binding(int id){
+    switch(id){case 1:return &g_menuVK;case 3:return &g_cheatShopVK;case 4:return &g_flyVK;
+    case 5:return &g_teleportVK;case 6:return &g_quickSaveVK;case 7:return &g_quickLoadVK;case 8:return &g_consoleVK;default:return nullptr;}
+}
+int EffectiveKey(int id,int key){return id==8&&key==0?int(MapVirtualKeyW(UINT(g_consoleScan.load()),MAPVK_VSC_TO_VK_EX)):key;}
+bool TryBind(int id,int key){
+    auto* target=Binding(id);if(!target)return false;
+    const int actual=EffectiveKey(id,key);
+    for(int other:{1,3,4,5,6,7,8})if(other!=id&&EffectiveKey(other,Binding(other)->load())==actual){
+        Log(L"Key already assigned to another mod action; binding unchanged.");return false;
+    }
+    *target=key;SaveSettings();Log(L"Hotkey binding saved.");return true;
+}
+std::string KeyLabel(int key){
+    wchar_t name[80]{};char text[240]{};
+    const LONG bits=LONG(MapVirtualKeyW(UINT(key),MAPVK_VK_TO_VSC)<<16);
+    if(GetKeyNameTextW(bits,name,80)>0){WideCharToMultiByte(CP_UTF8,0,name,-1,text,240,nullptr,nullptr);return text;}
+    sprintf_s(text,"Key %d",key);return text;
 }
 void InitPathAndSettings(){
     wchar_t path[MAX_PATH]{};
@@ -161,6 +186,9 @@ void InitPathAndSettings(){
     g_cheatShopVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"CheatShopVirtualKey",VK_F1,g_ini.c_str())),8,254);
     g_flyVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"FreecamVirtualKey",VK_F2,g_ini.c_str())),8,254);
     g_teleportVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"TeleportVirtualKey",VK_F3,g_ini.c_str())),8,254);
+    g_quickSaveVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"QuickSaveVirtualKey",VK_F5,g_ini.c_str())),8,254);
+    g_quickLoadVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"QuickLoadVirtualKey",VK_F8,g_ini.c_str())),8,254);
+    g_consoleVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"ConsoleVirtualKey",0,g_ini.c_str())),0,254);
     g_flySpeed=std::clamp(int(GetPrivateProfileIntW(L"Freecam",L"Speed",600,g_ini.c_str())),100,2000);
     g_smlConsoleVK=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"SMLConsoleVirtualKey",0,g_ini.c_str())),0,254);
     g_consoleScan=std::clamp(int(GetPrivateProfileIntW(L"Hotkeys",L"DeveloperConsoleScanCode",41,g_ini.c_str())),1,127);
@@ -173,7 +201,7 @@ void InitPathAndSettings(){
     crtoi::hub::SetEnabled(GetPrivateProfileIntW(L"Hub",L"AllowCompletedChapterReentry",1,g_ini.c_str())!=0);
     g_skipStartupVideos=GetPrivateProfileIntW(L"Startup",L"SkipIntroVideos",1,g_ini.c_str())!=0;
     g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",105,g_ini.c_str())),60,130);
-    Log(L"CRToi V0.10C TEST: F5 quick save / F8 native quick load; console-key passthrough; rejected sight experiment disabled; V0.9I behavior retained. Original V0.9B hub reentry restored at user request.");
+    Log(L"CRToi V0.10D TEST: Rebindable save/load/console; overlay-independent FOV/actions; native console creation/toggle; V0.9I behavior retained. Original V0.9B hub reentry restored at user request.");
 }
 // Suppress ONLY the three documented startup MP4 files in Crisol's
 // Content/Movies directory while the game is initializing. This avoids
@@ -360,9 +388,8 @@ void QueueTeleport(){
     Log(L"F3: teleport requested; waiting for the verified gameplay camera callback.");
 }
 bool FlyKey(int vk){return (GetAsyncKeyState(vk)&0x8000)!=0;}
-bool GameplayWindowActive(){
-    return g_gameHwnd&&GetForegroundWindow()==g_gameHwnd&&!g_menuOpen.load();
-}
+bool GameWindowFocused(){return g_gameHwnd&&GetForegroundWindow()==g_gameHwnd;}
+bool GameplayWindowActive(){return GameWindowFocused()&&!g_menuOpen.load();}
 void UpdateFlightLocation(const uint8_t* view){
     const ULONGLONG now=GetTickCount64();
     if(!GameplayWindowActive()){g_flyLastTick=now;return;}
@@ -520,7 +547,7 @@ bool CameraOwnerLooksLikeGameplay(void* camera,const uint8_t* view){
 }
 void AutoCaptureCamera(void* camera,uint8_t* view,float world,float fps,bool aiming){
     if(!g_autoCamera.load()||g_captureCamera.load()||g_flyActive.load()||
-       aiming||g_menuOpen.load()||
+       aiming||
        !g_gameHwnd||GetForegroundWindow()!=g_gameHwnd)return;
     const uint64_t now=GetTickCount64();
     const uintptr_t ptr=reinterpret_cast<uintptr_t>(camera);
@@ -614,10 +641,11 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
     bool sniper=false,scopeShown=false;void* ownerActor=nullptr;double ownerRoot[3]{};
     const bool knownWeapon=GetPlayerRootFromCamera(camera,ownerActor,ownerRoot)&&
         crtoi::nativebridge::PlayerWeaponState(ownerActor,sniper,scopeShown);
-    bool aiming=ScopeInputHeld()||(knownWeapon&&scopeShown);
+    if(!g_menuOpen.load())g_lastGameplayAim=ScopeInputHeld()||(knownWeapon&&scopeShown);
+    bool aiming=g_lastGameplayAim||(knownWeapon&&scopeShown);
     // Restore the V0.9D first-person acquisition path. Controller/tick/cursor
     // predicates added in V0.9E/F prevented all gameplay capture in user tests.
-    if(!GameplayWindowActive()){ResetFovBlend();return;}
+    if(!GameWindowFocused()){ResetFovBlend();return;}
     const bool firstPerson=(object[0x262]&0x04)!=0&&(flags&0x02)!=0&&
         std::isfinite(baseFPS)&&baseFPS>1.f&&baseFPS<179.f;
     const bool capturedScope=knownWeapon&&sniper&&scopeShown&&
@@ -734,50 +762,38 @@ LRESULT CALLBACK WindowProc(HWND wnd,UINT msg,WPARAM wp,LPARAM lp){
     // Forward Alt+F4 before hotkey capture, quick save or ImGui consumes input.
     if(crtoi::hotkeys::PassSystemClose(msg,wp,lp,(GetKeyState(VK_MENU)&0x8000)!=0))
         return g_previousWndProc?CallWindowProcW(g_previousWndProc,wnd,msg,wp,lp):DefWindowProcW(wnd,msg,wp,lp);
+    const unsigned scan=unsigned((static_cast<unsigned long long>(lp)>>16)&0xff);
     const bool consoleKey=(msg==WM_KEYDOWN||msg==WM_KEYUP||msg==WM_SYSKEYDOWN||msg==WM_SYSKEYUP)&&
-        (((static_cast<unsigned long long>(lp)>>16)&0xff)==unsigned(g_consoleScan.load()))&&
+        (g_consoleVK.load()?int(wp)==g_consoleVK.load():scan==unsigned(g_consoleScan.load()))&&
         (GetKeyState(VK_MENU)&0x8000)==0&&(GetKeyState(VK_CONTROL)&0x8000)==0;
-    if(consoleKey&&g_captureHotkey.load()==0){
-        if(msg==WM_KEYDOWN||msg==WM_SYSKEYDOWN){g_menuOpen=false;StopFly(L"Freecam stopped for console key.");Log(L"Console key forwarded to the game; mod menu closed.");}
-        return g_previousWndProc?CallWindowProcW(g_previousWndProc,wnd,msg,wp,lp):DefWindowProcW(wnd,msg,wp,lp);
+    if(msg==WM_CHAR&&GetTickCount64()<g_consoleCharUntil.load()&&scan==g_consoleLastScan.load())return 0;
+    if(consoleKey&&g_captureHotkey.load()==0&&crtoi::nativebridge::ConsoleToggleReady()){
+        if((msg==WM_KEYDOWN||msg==WM_SYSKEYDOWN)&&!(lp&(1LL<<30))){
+            g_menuOpen=false;StopFly(L"Freecam stopped for console.");
+            g_consoleLastScan=scan;g_consoleCharUntil=GetTickCount64()+200;
+            crtoi::nativebridge::QueueConsole(g_gameHwnd);
+        }
+        return 0;
     }
     if(msg==WM_KEYDOWN || msg==WM_SYSKEYDOWN){
         if(!(lp & (1LL<<30))){
             const int capture=g_captureHotkey.exchange(0);
             if(capture) {
-                if(wp==VK_F5||wp==VK_F8){g_captureHotkey=capture;Log(L"F5/F8 are reserved for quick save/load; choose another key.");return 0;}
-                if(wp!=VK_ESCAPE) {
-                    if(capture==1){
-                        if(int(wp)!=g_cheatShopVK.load()&&int(wp)!=g_flyVK.load()&&
-                           int(wp)!=g_teleportVK.load())g_menuVK=int(wp);
-                    }
-                    if(capture==3){
-                        if(int(wp)!=g_menuVK.load()&&int(wp)!=g_flyVK.load()&&
-                           int(wp)!=g_teleportVK.load())g_cheatShopVK=int(wp);
-                    }
-                    if(capture==4&&int(wp)!=g_menuVK.load()&&
-                       int(wp)!=g_cheatShopVK.load()&&int(wp)!=g_teleportVK.load())
-                        g_flyVK=int(wp);
-                    if(capture==5&&int(wp)!=g_menuVK.load()&&
-                       int(wp)!=g_cheatShopVK.load()&&int(wp)!=g_flyVK.load())
-                        g_teleportVK=int(wp);
-                    SaveSettings();
-                    Log(L"Hotkey rebound through native game window.");
-                }
+                if(wp==VK_SHIFT||wp==VK_CONTROL||wp==VK_MENU||wp==VK_LWIN||wp==VK_RWIN){g_captureHotkey=capture;return 0;}
+                if(wp!=VK_ESCAPE&&!TryBind(capture,int(wp)))g_captureHotkey=capture;
                 return 0;
             }
             const auto quick=crtoi::hotkeys::GetQuickAction(msg,wp,lp,(GetKeyState(VK_MENU)&0x8000)!=0,
-                (GetKeyState(VK_CONTROL)&0x8000)!=0,(GetKeyState(VK_SHIFT)&0x8000)!=0);
+                (GetKeyState(VK_CONTROL)&0x8000)!=0,(GetKeyState(VK_SHIFT)&0x8000)!=0,g_quickSaveVK.load(),g_quickLoadVK.load());
             if(quick==crtoi::hotkeys::QuickAction::Load){
-                StopFly(L"Freecam stopped before F8 quick load.");g_menuOpen=false;
-                if(!crtoi::nativebridge::QueueQuickLoad(g_gameHwnd))Log(L"F8 quick load unavailable or already queued.");
+                StopFly(L"Freecam stopped before quick load.");
+                if(!crtoi::nativebridge::QueueQuickLoad(g_gameHwnd,g_menuOpen.load()))Log(L"F8 quick load unavailable or already queued.");
                 return 0;
             }
             if(quick==crtoi::hotkeys::QuickAction::Save){
                 if(g_flyActive.load())Log(L"F5 refused while freecam is active.");
                 else {
-                    g_menuOpen=false;
-                    if(!crtoi::nativebridge::QueueQuickSave(g_gameHwnd))Log(L"F5 quick save unavailable or already queued.");
+                    if(!crtoi::nativebridge::QueueQuickSave(g_gameHwnd,g_menuOpen.load()))Log(L"F5 quick save unavailable or already queued.");
                 }
                 return 0;
             }
@@ -835,10 +851,10 @@ void DrawMenu(){
     layout::StyleScope style;
     ImGui::SetNextWindowSize(ImVec2(720,555),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(520,370),ImVec2(1300,1020));
-    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.10C NATIVE SHOP + CAMERA TEST",
+    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.10D NATIVE SHOP + CAMERA TEST",
         &open,ImGuiWindowFlags_NoCollapse)){
         ImGui::TextColored(ImVec4(.52f,.83f,1.f,1.f),"CRISOL ENHANCED PC MOD");
-        ImGui::SameLine();ImGui::TextDisabled("V0.10C | NATIVE SHOP + CAMERA");
+        ImGui::SameLine();ImGui::TextDisabled("V0.10D | NATIVE SHOP + CAMERA");
         ImGui::Separator();ImGui::Spacing();
         ImGui::SetNextItemOpen(false,ImGuiCond_Once);
         if(layout::Group("Camera / Gameplay ownership")){
@@ -990,7 +1006,7 @@ void DrawMenu(){
                 g_captureHotkey=3;
             ImGui::SameLine();
             if(ImGui::Button("Reset to F1")){
-                g_cheatShopVK=VK_F1;g_captureHotkey=0;SaveSettings();
+                TryBind(3,VK_F1);g_captureHotkey=0;
             }
             ImGui::Spacing();
             ImGui::Text("Command path: %s",crtoi::nativebridge::ConsoleReady()?"ready":"unavailable for this game build");
@@ -999,16 +1015,18 @@ void DrawMenu(){
             if(crtoi::nativebridge::ShopPending())ImGui::TextDisabled("Waiting for the game to handle your request...");
         }
         ImGui::SetNextItemOpen(false,ImGuiCond_Once);
-        if(layout::Group("Quick save / load (F5 / F8)")){
-            ImGui::TextWrapped("F5 saves through the game and keeps a separate quick snapshot. F8 loads the last successful F5 snapshot. Previous AutoSave files are backed up; manual slots are not targeted.");
+        if(layout::Group("Quick save / load")){
+            ImGui::TextWrapped("Saves keep a separate quick snapshot; quick load restores the last successful quick save. The mod menu can stay open. Previous AutoSave files are backed up; manual slots are not targeted.");
+            ImGui::Text("Save: %s | Load: %s",KeyLabel(g_quickSaveVK.load()).c_str(),KeyLabel(g_quickLoadVK.load()).c_str());
+            if(ImGui::Button(g_captureHotkey.load()==6?"Press save key...":"Rebind save key"))g_captureHotkey=6;
+            ImGui::SameLine();if(ImGui::Button(g_captureHotkey.load()==7?"Press load key...":"Rebind load key"))g_captureHotkey=7;
             ImGui::TextWrapped("%s",crtoi::nativebridge::QuickSaveStatus());
             if(!crtoi::nativebridge::QuickSaveReady())ImGui::TextDisabled("Unavailable for this game build.");
-            else if(ImGui::Button("Quick save now (F5)")){
-                g_menuOpen=false;
-                crtoi::nativebridge::QueueQuickSave(g_gameHwnd);
+            else if(ImGui::Button("Quick save now")){
+                crtoi::nativebridge::QueueQuickSave(g_gameHwnd,true);
             }
-            if(crtoi::nativebridge::QuickLoadReady()&&ImGui::Button("Quick load (F8)")){
-                g_menuOpen=false;StopFly(L"Freecam stopped for quick load.");crtoi::nativebridge::QueueQuickLoad(g_gameHwnd);
+            if(crtoi::nativebridge::QuickLoadReady()&&ImGui::Button("Quick load now")){
+                StopFly(L"Freecam stopped for quick load.");crtoi::nativebridge::QueueQuickLoad(g_gameHwnd,g_menuOpen.load());
             }
         }
         ImGui::SetNextItemOpen(false,ImGuiCond_Once);
@@ -1028,6 +1046,15 @@ void DrawMenu(){
             ImGui::TextDisabled("If blocked = 0, the game's startup movie loading bypassed our hooks.");
         }
         ImGui::SetNextItemOpen(false,ImGuiCond_Once);
+        if(layout::Group("Console")){
+            ImGui::Text("Console key: %s",KeyLabel(EffectiveKey(8,g_consoleVK.load())).c_str());
+            if(ImGui::Button(g_captureHotkey.load()==8?"Press console key...":"Rebind console key"))g_captureHotkey=8;
+            ImGui::SameLine();if(ImGui::Button("Default console key"))TryBind(8,0);
+            if(crtoi::nativebridge::ConsoleToggleReady()&&ImGui::Button("Open console")){
+                g_menuOpen=false;open=false;StopFly(L"Freecam stopped for console.");crtoi::nativebridge::QueueConsole(g_gameHwnd);
+            }
+        }
+        ImGui::SetNextItemOpen(false,ImGuiCond_Once);
         if(layout::Group("Controls")){
             ImGui::Text("Toggle overlay: virtual key %d",g_menuVK.load());
             if(ImGui::Button(g_captureHotkey.load()==1?
@@ -1035,7 +1062,7 @@ void DrawMenu(){
                 g_captureHotkey=1;
             ImGui::SameLine();
             if(ImGui::Button("Reset to Insert")){
-                g_menuVK=VK_INSERT;g_captureHotkey=0;SaveSettings();
+                TryBind(1,VK_INSERT);g_captureHotkey=0;
             }
         }
         ImGui::SetNextItemOpen(false,ImGuiCond_Once);

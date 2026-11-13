@@ -2,6 +2,12 @@
 
 Independent x64 ASI mod for **Crisol: Theater of Idols**. Built around an in-game Dear ImGui menu and a DXGI ASI loader.
 
+## V0.10D bindings / overlay / native console
+
+Save/load keys (defaults F5/F8), console, overlay, CheatShop, freecam and teleport are rebindable with conflict checks and INI persistence. The mod overlay no longer vetoes FOV/camera acquisition. Save/load requests explicitly originating in that overlay allow its UI state; backup, ownership, loading and file checks remain.
+
+Console toggle uses the native controller ConsoleKey path on the game thread. If the viewport console is absent, it attempts native UConsole creation using the engine ConsoleClass and property setter. Uses the engine's own console FKey and verified ownership ABI; no fake keyboard/FFRAME. Wrong/missing native schemas remain inert with diagnostics. Actual opening and overlay/rebind behavior require gameplay confirmation. Earlier FullAim sight test remains withdrawn.
+
 ## V0.10C F5 save / F8 load / console-key routing
 
 F4 is free again; Alt+F4 remains passed to the game. F5 invokes native AutoSave, backs up the previous file and stores a byte-verified dedicated snapshot outside SaveGames. F8 backs up the current AutoSave, stages that last F5 snapshot and calls native CRLoadGame(world,0). Native automatic checkpoints do not overwrite the separate quick snapshot. Load/snapshot behavior still requires gameplay confirmation; no manual slot is targeted. Mod overlay closes and forwards the configured console key directly to the game.
