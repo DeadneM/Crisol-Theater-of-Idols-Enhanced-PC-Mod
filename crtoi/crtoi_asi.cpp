@@ -1186,7 +1186,7 @@ void DrawCommandConsole(){
         }
         if(ImGui::Button("Clear output"))lines.clear();
     }
-    ImGui::End();g_consoleOpen=open;
+    ImGui::End();if(!open)g_consoleOpen=false;
 }
 void DrawQuickSaveToast(){
     const uint64_t changed=crtoi::nativebridge::QuickSaveStatusAt();

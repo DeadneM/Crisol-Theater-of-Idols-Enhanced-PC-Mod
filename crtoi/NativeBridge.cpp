@@ -492,7 +492,7 @@ bool ServiceConsoleCommand(void* world){
         if(!command.empty()&&LiveObject(controller)&&Read(controller,0,table)&&Read(table,0xDE0,target)&&
            reinterpret_cast<uintptr_t>(target)>=image+0x1000&&reinterpret_cast<uintptr_t>(target)<image+0x7490000&&Range(target,16)){
             const FString input{command.data(),int32_t(command.size()+1),int32_t(command.size()+1)};FString output{};
-            reinterpret_cast<ConsoleFn>(target)(controller,&output,&input,true);
+            reinterpret_cast<ConsoleFn>(target)(controller,&output,&input,false);
             dispatched=true;reply="Command sent.";
             if(output.data){
                 const int count=output.count>0?std::min(output.count-1,2048):0;
