@@ -202,7 +202,7 @@ void InitPathAndSettings(){
     crtoi::hub::SetEnabled(GetPrivateProfileIntW(L"Hub",L"AllowCompletedChapterReentry",1,g_ini.c_str())!=0);
     g_skipStartupVideos=GetPrivateProfileIntW(L"Startup",L"SkipIntroVideos",1,g_ini.c_str())!=0;
     g_fpsFov=std::clamp(int(GetPrivateProfileIntW(L"Camera",L"FPSFOV",105,g_ini.c_str())),60,130);
-    Log(L"CRToi V0.10D TEST: Rebindable save/load/console; overlay-independent FOV/actions; in-mod command console using native execution; V0.9I behavior retained. Original V0.9B hub reentry restored at user request.");
+    Log(L"CRToi V0.11A EXPERIMENT: Pistol full aim + authored transition (session-only OFF); V0.10D retained. Rebindable save/load/console; overlay-independent FOV/actions; in-mod command console using native execution; V0.9I behavior retained. Original V0.9B hub reentry restored at user request.");
 }
 // Suppress ONLY the three documented startup MP4 files in Crisol's
 // Content/Movies directory while the game is initializing. This avoids
@@ -675,6 +675,7 @@ void __fastcall HookCameraView(void* camera,float delta,void* out) {
     }
     if(!g_flyActive.load()&&ownerActor){
         crtoi::nativebridge::MarkGameplayForSave(ownerActor);
+        crtoi::nativebridge::MarkPistolSightAim(ownerActor,aiming);
     }
     HandleFlyCamera(camera,view,aiming);
     if(g_blendCamera!=ptr||!g_blendTick||now-g_blendTick>250){
@@ -856,10 +857,10 @@ void DrawMenu(){
     layout::StyleScope style;
     ImGui::SetNextWindowSize(ImVec2(720,555),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(520,370),ImVec2(1300,1020));
-    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.10D NATIVE SHOP + CAMERA TEST",
+    if(ImGui::Begin("Crisol Enhanced PC Mod | V0.11A PISTOL TRANSITION TEST",
         &open,ImGuiWindowFlags_NoCollapse)){
         ImGui::TextColored(ImVec4(.52f,.83f,1.f,1.f),"CRISOL ENHANCED PC MOD");
-        ImGui::SameLine();ImGui::TextDisabled("V0.10D | NATIVE SHOP + CAMERA");
+        ImGui::SameLine();ImGui::TextDisabled("V0.11A | PISTOL TRANSITION TEST");
         ImGui::Separator();ImGui::Spacing();
         ImGui::SetNextItemOpen(false,ImGuiCond_Once);
         if(layout::Group("Camera / Gameplay ownership")){
@@ -945,6 +946,12 @@ void DrawMenu(){
                 }
             }
             float aim=float(g_aimFov.load());
+            bool pistolSights=crtoi::nativebridge::PistolSightsEnabled();
+            ImGui::BeginDisabled(!crtoi::nativebridge::PistolSightsReady());
+            if(ImGui::Checkbox("Pistol sight transition (experimental)",&pistolSights))
+                crtoi::nativebridge::SetPistolSightsEnabled(pistolSights);
+            ImGui::EndDisabled();
+            ImGui::TextDisabled("Session only; OFF at launch. Pistol only. Visual alignment unvalidated.");
             if(layout::NumberRow("Aim FOV","AimFOV",&aim,20.f,130.f,105.f,"%.0f deg","%.0f")){
                 g_aimFov=int(std::lround(aim));SaveSettings();
             }

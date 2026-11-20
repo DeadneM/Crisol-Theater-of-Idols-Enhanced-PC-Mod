@@ -22,6 +22,10 @@ namespace {
 Logger logger=nullptr;
 uintptr_t image=0;
 std::atomic_bool quickSupported{false},loadSupported{false};
+std::atomic_bool pistolSupported{false},pistolEnabled{false},pistolAiming{false};
+std::atomic<void*> pistolOwner{nullptr};
+std::atomic_uint64_t pistolSeen{0};
+void* sightManager=nullptr;void* sightWeapon=nullptr;void* sightArms=nullptr;
 std::atomic_bool saveFromOverlay{false},loadFromOverlay{false};
 std::atomic_uint64_t consoleAt{0};
 std::mutex commandMutex;std::wstring queuedCommand;std::string commandReply;std::atomic_uint replyVersion{0};
@@ -508,11 +512,53 @@ bool ServiceConsoleCommand(void* world){
     {std::lock_guard<std::mutex> lock(commandMutex);commandReply=std::move(reply);++replyVersion;}
     return dispatched;
 }
+// The native full-aim setter does not arm the animation transition. The game's
+// own caller separately invokes SetAimTransition (04D1AF60); its named getter
+// and finish-notify wrappers establish the same +4DE field. No pose offsets.
+bool PistolContext(void* manager,void*& weapon,void*& arms,uint8_t& full){
+    void* owner=nullptr;uint8_t force=0;
+    return LiveObject(manager)&&Read(manager,0xD8,weapon)&&LiveObject(weapon)&&
+        DerivedFrom(weapon,"CRWDivinePistolNew_BP_C")&&
+        Read(manager,0x100,arms)&&LiveObject(arms)&&DerivedFrom(arms,"CRAnimInstancePlayer")&&
+        Read(manager,0xE8,owner)&&LiveObject(owner)&&
+        Read(manager,0x190,full)&&full<=1&&Read(manager,0x191,force)&&force==0;
+}
+void PistolTransition(void* manager,void* arms,bool full){
+    using Setter=void(__fastcall*)(void*,bool);
+    reinterpret_cast<Setter>(image+0x4D68EF0)(manager,full);
+    // The setter broadcasts callbacks: revalidate before touching animation.
+    void* current=nullptr;
+    if(LiveObject(manager)&&Read(manager,0x100,current)&&current==arms&&LiveObject(arms))
+        reinterpret_cast<Setter>(image+0x4D1AF60)(arms,true);
+}
+void ReleasePistolSight(){
+    void* weapon=nullptr;void* arms=nullptr;uint8_t full=0;
+    if(sightManager&&PistolContext(sightManager,weapon,arms,full)&&
+       weapon==sightWeapon&&arms==sightArms&&full)PistolTransition(sightManager,arms,false);
+    sightManager=nullptr;sightWeapon=nullptr;sightArms=nullptr;
+}
+void ServicePistolSights(){
+    if(!pistolSupported.load()||!OnGameThread())return;
+    const bool requested=pistolEnabled.load()&&pistolAiming.load()&&
+        GetTickCount64()-pistolSeen.load()<300;
+    if(!requested){ReleasePistolSight();return;}
+    void* owner=pistolOwner.load();void* manager=nullptr;void* weapon=nullptr;void* arms=nullptr;uint8_t full=0;
+    if(!LiveObject(owner)||!Read(owner,0xB60,manager)||!PistolContext(manager,weapon,arms,full)){
+        ReleasePistolSight();return;
+    }
+    if(sightManager&&(manager!=sightManager||weapon!=sightWeapon||arms!=sightArms))ReleasePistolSight();
+    // One transition per held aim. Never fight a native cancellation every tick.
+    if(sightManager||full)return;
+    PistolTransition(manager,arms,true);
+    sightManager=manager;sightWeapon=weapon;sightArms=arms;
+    if(logger)logger(L"Pistol sights EXPERIMENT: full aim + authored transition requested; visual alignment unvalidated.");
+}
 void __fastcall HookWorldTick(void* world,int tickType,float delta) {
     thread_local bool busy=false;
     const bool outer=!busy;busy=true;
     lastTickWorld=world;lastTickPlayable=tickType!=2&&delta>0.f;lastTickAt=GetTickCount64();
     if(originalTick)originalTick(world,tickType,delta);
+    if(outer&&tickType!=2&&delta>0.f)ServicePistolSights();
 
     if(outer&&consoleSupported.load())Service(world);
     const bool commandRan=outer&&consoleSupported.load()&&ServiceConsoleCommand(world);
@@ -554,9 +600,16 @@ void Initialize(Logger log) {
     constexpr uint8_t manager[]={0x48,0x8b,0x81,0x60,0x0b,0x00,0x00};
     constexpr uint8_t weapon[]={0x48,0x8b,0x81,0xd8,0x00,0x00,0x00};
     constexpr uint8_t scope[]={0x0f,0xb6,0x81,0x3e,0x01,0x00,0x00};
+    constexpr uint8_t fullAim[]={0x40,0x53,0x55,0x57,0x48,0x83,0xec,0x50,0x33,0xff,0x0f,0xb6,0xea};
+    constexpr uint8_t aimTransition[]={0x88,0x91,0xde,0x04,0x00,0x00,0xc3};
+    // Exact setter bodies, independently established by native caller and the
+    // named GetAimTransition / AnimNotify_FinishAimTransition registrations.
+    pistolSupported=std::memcmp(reinterpret_cast<void*>(image+0x4D68EF0),fullAim,sizeof(fullAim))==0&&
+        std::memcmp(reinterpret_cast<void*>(image+0x4D1AF60),aimTransition,sizeof(aimTransition))==0;
     weaponSupported=std::memcmp(reinterpret_cast<void*>(image+0x4CC0395),manager,sizeof(manager))==0&&
         std::memcmp(reinterpret_cast<void*>(image+0x4CE0415),weapon,sizeof(weapon))==0&&
         std::memcmp(reinterpret_cast<void*>(image+0x4CE0695),scope,sizeof(scope))==0;
+    pistolSupported=pistolSupported.load()&&weaponSupported.load();
     constexpr uint8_t event[]={0x40,0x55,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57};
     constexpr uint8_t viewport[]={0xf6,0x81,0xd9,0x00,0x00,0x00,0x20};
     constexpr uint8_t subsystemCall[]={0xe8,0xf1,0x0d,0xf6,0xff};
@@ -658,6 +711,10 @@ bool PlayerWeaponState(void* owner,bool& sniper,bool& scopeShown) {
     sniper=DerivedFrom(weapon,"CRDivineSniper_BP_C");scopeShown=scope!=0;
     return true;
 }
+bool PistolSightsReady(){return pistolSupported.load();}
+bool PistolSightsEnabled(){return pistolEnabled.load();}
+void SetPistolSightsEnabled(bool enabled){pistolEnabled=enabled;}
+void MarkPistolSightAim(void* owner,bool aiming){pistolOwner=owner;pistolAiming=aiming;pistolSeen=GetTickCount64();}
 bool PlayerCameraControllable(void* owner) {
     if(!supported.load()||!OnGameThread()||!lastTickPlayable.load()||
        GetTickCount64()-lastTickAt.load()>500)return false;

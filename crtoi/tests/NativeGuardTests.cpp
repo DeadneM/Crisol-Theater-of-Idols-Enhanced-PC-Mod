@@ -8,6 +8,11 @@ int main() {
     // contexts must be refused before any game object access or native call.
     Initialize(&Log);
     if(Ready()||ConsoleReady()||!logged)return 1;
+    if(PistolSightsReady()||PistolSightsEnabled())return 11;
+    SetPistolSightsEnabled(true);
+    MarkPistolSightAim(reinterpret_cast<void*>(1),true);
+    if(PistolSightsReady())return 12;
+    SetPistolSightsEnabled(false);
     if(PlayerCameraControllable(reinterpret_cast<void*>(1)))return 5;
     MarkGameplayForSave(reinterpret_cast<void*>(1));
     if(QuickSaveReady()||QueueQuickSave(reinterpret_cast<HWND>(1)))return 7;

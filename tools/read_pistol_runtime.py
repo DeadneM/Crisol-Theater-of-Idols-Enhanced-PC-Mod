@@ -96,6 +96,11 @@ class Reader:
         return result
     def states(self,obj):
         result={}
+        # The authored full-aim transition also tests WeaponState != 2.
+        # Keep this a raw enum value: its gameplay meaning is not established.
+        p=self.prop(obj,'WeaponState')
+        if p and p['type'] in ('ByteProperty','EnumProperty') and p['size']==1:
+            result['WeaponState_raw']=self.read(obj+p['offset'],1)[0]
         for name in ('bIsFullyAim','bAimTransition'):
             p=self.prop(obj,name)
             if p and p['type']=='BoolProperty' and p['size']==1:
