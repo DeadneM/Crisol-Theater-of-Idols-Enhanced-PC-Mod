@@ -6,7 +6,7 @@ Independent x64 ASI mod for **Crisol: Theater of Idols**. Built around an in-gam
 
 Base: user-validated V0.10D (30d7a894). Experimental branch only; main unchanged. Optional camera-menu checkbox, OFF each launch and not persisted in the personal INI. Pistol only: requests native full aim plus the separately verified native animation transition. One request per held aim; native cancellation is not fought every frame. Authored reverse transition requested on release where the same context remains valid. No guessed pose offsets, timer forcing or sniper changes.
 
-Status: source prepared, runtime UNVALIDATED. Acceptance test: enable the session checkbox, aim/release the pistol, verify visible sight alignment, smooth authored entry/exit, normal shooting/reload and weapon switching. Existing FOV settings, console, keys, shop, doors and save/load paths preserved. Disable the checkbox or restart to stop the experiment; binary rollback uses V0.10D. Install ZIP remains exactly dxgi.dll + CRToiEnhanced.asi.
+Status: CONSTRUCTED / CONTROLLED, runtime UNVALIDATED; [GitHub run 44748867537](https://github.com/DeadneM/Crisol-Theater-of-Idols-Enhanced-PC-Mod/actions/runs/44748867537), all four CTests pass. Not installed. Acceptance test: enable the session checkbox, aim/release the pistol, verify visible sight alignment, smooth authored entry/exit, normal shooting/reload and weapon switching. Existing FOV settings, console, keys, shop, doors and save/load paths preserved. Disable the checkbox or restart to stop the experiment; binary rollback uses V0.10D. Install ZIP remains exactly dxgi.dll + CRToiEnhanced.asi.
 
 ## V0.10D bindings / overlay / native console
 
@@ -63,7 +63,7 @@ Restores the exact V0.9B chapter-door mechanism while retaining V0.9C native Che
   projection before automatic acquisition. [Native audit / test plan](docs/V09C_NATIVE_CONSOLE_CAMERA.md).
   [V0.9C build / artifact](https://github.com/DeadneM/Crisol-Theater-of-Idols-Enhanced-PC-Mod/actions/runs/43205129608/artifacts/13936424260): built, package-checked and installed; gameplay confirmation remains required.
 
-- **`dev/v0.9b-hub-reentry-test`: V0.9B WITHDRAWN â€” level-state persistence failed.**
+- **`dev/v0.9b-hub-reentry-test`: V0.9B WITHDRAWN — level-state persistence failed.**
   Historical test information follows; do not treat successful access as a safe replay.
   Enable **Allow revisiting completed chapters** in the menu, then reload the Fair
   save. Completed chapter 1/2 entrances and their existing returns are targeted;
@@ -104,7 +104,7 @@ binaries. No progression, map-count or Solari repair is included.
 ## V0.4A controls
 
 - `Insert`: in-game ImGui menu, rebindable
-- World FOV: **75â€“130**; FPS/weapon FOV: **60â€“130**
+- World FOV: **75–130**; FPS/weapon FOV: **60–130**
 - Camera capture is intentionally manual; only the captured gameplay camera is modified, and native zoom/ADS/FOV changes take priority
 - The old global camera-scalar patch was removed
 - The mod does **not** enable the developer console
